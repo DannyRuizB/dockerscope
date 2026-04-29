@@ -47,6 +47,13 @@
           <span><i class="edge depends"></i>depends_on</span>
           <span><i class="edge net"></i>network</span>
         </div>
+        <div class="export-wrap">
+          <button id="export-toggle" class="header-btn" title="Download graph" type="button" aria-haspopup="true" aria-expanded="false">⤓</button>
+          <div id="export-menu" class="export-menu" hidden>
+            <button type="button" data-format="png">PNG</button>
+            <button type="button" data-format="svg">SVG</button>
+          </div>
+        </div>
         <button id="popout-graph" class="header-btn" title="Open graph in a new window" type="button">↗</button>
       </div>
       <div id="graph"></div>
@@ -68,7 +75,7 @@
   </main>
 
   <footer class="bottombar">
-    <span>v0.2.1</span>
+    <span>v0.3.0</span>
     <span>·</span>
     <span>MIT</span>
     <span>·</span>
@@ -80,6 +87,7 @@
   <script src="https://cdn.jsdelivr.net/npm/layout-base@2.0.1/layout-base.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/cose-base@2.2.0/cose-base.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/cytoscape-fcose@2.2.0/cytoscape-fcose.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/cytoscape-svg@0.4.0/cytoscape-svg.js"></script>
   <script src="src/parser.js"></script>
   <script src="src/linter.js"></script>
   <script src="src/graph.js"></script>

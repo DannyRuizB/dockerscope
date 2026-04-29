@@ -13,8 +13,9 @@ DockerScope is a **client-side, zero-backend** tool that parses a `docker-compos
 - A **port table** listing every published port grouped by service.
 - **Paste, upload, or drag & drop** your compose file — everything runs in the browser.
 - **Pop out the graph** into a real OS window with the `↗` button — drag it to a second monitor while you keep editing in the main one.
+- **Download the graph** as PNG or SVG with the `⤓` button — the SVG keeps the original colors and is fully editable in Inkscape / Figma.
 
-🚧 Work in progress — v0.2.1.
+🚧 Work in progress — v0.3.0.
 
 ---
 
@@ -43,7 +44,7 @@ python3 -m http.server 8080
 
 - [x] **v0.1** — Parse compose, render service graph (`depends_on` + networks), list ports, file upload + drag & drop.
 - [x] **v0.2** — Static linter: floating tags, plaintext secrets in `environment`, public DB/cache ports, missing `restart`, missing healthchecks. Findings highlight affected services on the graph.
-- [ ] **v0.3** — Export graph to PNG / SVG.
+- [x] **v0.3** — Export graph to PNG / SVG.
 - [ ] **v0.4** — Volumes as nodes; `extends` / `include` resolution.
 - [ ] **v0.5** — `Dockerfile` analyzer: drop a `Dockerfile` next to the compose to surface base image, multi-stage builds, and `EXPOSE` / `ENV` / `CMD` per service.
 - [ ] **v0.6** — Stack detection from `package.json` / `requirements.txt` / `go.mod` to label each service with its framework, DB driver, and queue client.
@@ -56,6 +57,7 @@ Pure HTML + CSS + vanilla JS. No build step, no bundler, no backend.
 
 - [`js-yaml`](https://github.com/nodeca/js-yaml) — YAML parsing.
 - [`Cytoscape.js`](https://js.cytoscape.org/) + [`cytoscape-fcose`](https://github.com/iVis-at-Bilkent/cytoscape.js-fcose) — graph rendering and force-directed layout with compound-node support (so networks can wrap their services).
+- [`cytoscape-svg`](https://github.com/kaluginserg/cytoscape-svg) — SVG export.
 
 All loaded from CDN; no `npm install` required.
 

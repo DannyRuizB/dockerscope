@@ -16,6 +16,8 @@
   const $lintSummary = document.getElementById("lint-summary");
   const $lintToggle = document.getElementById("lint-toggle");
   const $popoutGraph = document.getElementById("popout-graph");
+  const $exportToggle = document.getElementById("export-toggle");
+  const $exportMenu = document.getElementById("export-menu");
   const $error = document.getElementById("parse-error");
 
   $analyze.addEventListener("click", run);
@@ -24,6 +26,9 @@
   $fileInput.addEventListener("change", onFilePicked);
   $lintToggle.addEventListener("click", toggleLint);
   $popoutGraph.addEventListener("click", popoutGraph);
+  $exportToggle.addEventListener("click", toggleExportMenu);
+  $exportMenu.addEventListener("click", onExportItemClick);
+  document.addEventListener("click", maybeCloseExportMenu);
 
   // Run popout mode (if invoked via ?popout=graph) before anything else so the
   // page renders in fullscreen-graph layout from the start.
@@ -43,6 +48,73 @@
     const collapsed = $lint.classList.toggle("collapsed");
     $lintToggle.setAttribute("aria-expanded", collapsed ? "false" : "true");
     $lintToggle.textContent = collapsed ? "▸" : "▾";
+  }
+
+  function toggleExportMenu(e) {
+    e.stopPropagation();
+    const open = $exportMenu.hasAttribute("hidden");
+    if (open) {
+      $exportMenu.removeAttribute("hidden");
+      $exportToggle.setAttribute("aria-expanded", "true");
+    } else {
+      $exportMenu.setAttribute("hidden", "");
+      $exportToggle.setAttribute("aria-expanded", "false");
+    }
+  }
+
+  function maybeCloseExportMenu(e) {
+    if ($exportMenu.contains(e.target) || e.target === $exportToggle) return;
+    $exportMenu.setAttribute("hidden", "");
+    $exportToggle.setAttribute("aria-expanded", "false");
+  }
+
+  async function onExportItemClick(e) {
+    const btn = e.target.closest("button[data-format]");
+    if (!btn) return;
+    const format = btn.dataset.format;
+    $exportMenu.setAttribute("hidden", "");
+    $exportToggle.setAttribute("aria-expanded", "false");
+    const cy = window.DockerScope.getCy();
+    if (!cy) {
+      showError("Nothing to export — analyze a compose file first.");
+      return;
+    }
+    try {
+      if (format === "png") await downloadPng(cy);
+      else if (format === "svg") await downloadSvg(cy);
+    } catch (err) {
+      showError("Export failed: " + (err && err.message ? err.message : err));
+    }
+  }
+
+  async function downloadPng(cy) {
+    const blob = await cy.png({
+      output: "blob-promise",
+      bg: "#0f172a",
+      full: true,
+      scale: 2,
+    });
+    triggerDownload(blob, "dockerscope-graph.png");
+  }
+
+  async function downloadSvg(cy) {
+    if (typeof cy.svg !== "function") {
+      throw new Error("SVG plugin not loaded.");
+    }
+    const svgString = cy.svg({ scale: 1, full: true, bg: "#0f172a" });
+    const blob = new Blob([svgString], { type: "image/svg+xml;charset=utf-8" });
+    triggerDownload(blob, "dockerscope-graph.svg");
+  }
+
+  function triggerDownload(blob, filename) {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
 
   function popoutGraph() {

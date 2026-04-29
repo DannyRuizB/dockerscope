@@ -9,8 +9,18 @@ if (typeof cytoscape !== "undefined" && typeof cytoscapeFcose !== "undefined" &&
   try { cytoscape.use(cytoscapeFcose); } catch (_) { /* already registered */ }
   window.__fcoseRegistered = true;
 }
+if (typeof cytoscape !== "undefined" && typeof cytoscapeSvg !== "undefined" && !window.__svgRegistered) {
+  try { cytoscape.use(cytoscapeSvg); } catch (_) { /* already registered */ }
+  window.__svgRegistered = true;
+}
 
 let cyInstance = null;
+
+// Exposes the current Cytoscape instance for download/export. Returns null if
+// no graph has been rendered yet.
+window.DockerScope.getCy = function () {
+  return cyInstance;
+};
 
 window.DockerScope.renderGraph = function (containerEl, model, lintByService) {
   const elements = buildElements(model, lintByService || {});
