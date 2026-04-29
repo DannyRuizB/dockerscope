@@ -2,6 +2,8 @@
 
 > Visual analyzer for `docker-compose.yml` — paste a compose file, see the architecture.
 
+### [Try the live demo →](https://dannyruizb.github.io/dockerscope/)
+
 ![DockerScope rendering the sample compose: web → api → db/cache, worker → api/cache, with frontend/backend networks and a per-service port table.](screenshots/screenshot.png)
 
 DockerScope is a **client-side, zero-backend** tool that parses a `docker-compose.yml` file and renders:
@@ -24,8 +26,7 @@ It is intentionally **not** a wrapper around `docker compose config` — it runs
 
 ## Use it
 
-Live demo (GitHub Pages, coming with v0.1.0):
-👉 _link will be added after publishing._
+Live demo: **https://dannyruizb.github.io/dockerscope/** — runs 100% in your browser, no upload, no server.
 
 Run locally — any static server works:
 
