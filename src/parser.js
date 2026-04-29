@@ -6,8 +6,10 @@
 //     environment: [{key, value}],   // value is null for `KEY=` and for interpolation refs like ${X}
 //     restart: string|null,
 //     healthcheck: object|null,
+//     volumes: [{type, source, target, readonly}],  // type: "named" | "bind" | "anonymous"
 //   }],
 //   networks: [string],
+//   namedVolumes: [string],         // volumes used by services + declared at top level
 //   warnings: [string]
 // }
 
@@ -31,6 +33,13 @@ window.DockerScope.parseCompose = function (yamlText) {
     throw new Error("`services` must be a mapping.");
   }
 
+  // Resolve top-level volume names first so per-service short-form entries can
+  // tell named volumes apart from bind mounts and anonymous volumes.
+  const topVolumes = doc.volumes && typeof doc.volumes === "object"
+    ? Object.keys(doc.volumes)
+    : [];
+  const topVolumeSet = new Set(topVolumes);
+
   for (const [name, raw] of Object.entries(rawServices)) {
     if (!raw || typeof raw !== "object") {
       warnings.push(`Service "${name}" is empty or not an object.`);
@@ -45,6 +54,7 @@ window.DockerScope.parseCompose = function (yamlText) {
       environment: parseEnvironment(raw.environment),
       restart: typeof raw.restart === "string" ? raw.restart : null,
       healthcheck: raw.healthcheck && typeof raw.healthcheck === "object" ? raw.healthcheck : null,
+      volumes: parseVolumes(raw.volumes, topVolumeSet, warnings, name),
     });
   }
 
@@ -57,7 +67,16 @@ window.DockerScope.parseCompose = function (yamlText) {
   services.forEach(s => s.networks.forEach(n => referenced.add(n)));
   const allNetworks = Array.from(new Set([...topNetworks, ...referenced]));
 
-  return { services, networks: allNetworks, warnings };
+  // Named volumes: top-level + any implicit ones referenced by services.
+  const usedNamed = new Set();
+  for (const svc of services) {
+    for (const v of svc.volumes) {
+      if (v.type === "named" && v.source) usedNamed.add(v.source);
+    }
+  }
+  const allNamedVolumes = Array.from(new Set([...topVolumes, ...usedNamed]));
+
+  return { services, networks: allNetworks, namedVolumes: allNamedVolumes, warnings };
 };
 
 function parseDependsOn(value) {
@@ -134,6 +153,76 @@ function toPort(v) {
   if (v == null || v === "") return null;
   const n = Number(v);
   return Number.isFinite(n) ? n : String(v);
+}
+
+// Accepts short and long form volume entries.
+//
+// Short form (string):
+//   "/in/container"                    → anonymous (target only)
+//   "src:/in/container"                → bind or named (depending on src shape / topVolumeSet)
+//   "src:/in/container:ro"             → with options (ro flag detected)
+//
+// Long form (object):
+//   { type: "bind"|"volume"|"tmpfs", source: "...", target: "...", read_only: true }
+//
+// `type` in the output is normalised to: "named", "bind", "anonymous", or "tmpfs".
+function parseVolumes(value, topVolumeSet, warnings, serviceName) {
+  if (!value) return [];
+  if (!Array.isArray(value)) {
+    warnings.push(`Service "${serviceName}": volumes must be a list.`);
+    return [];
+  }
+  const out = [];
+  for (const entry of value) {
+    const parsed = parseSingleVolume(entry, topVolumeSet);
+    if (parsed) out.push(parsed);
+    else warnings.push(`Service "${serviceName}": could not parse volume entry ${JSON.stringify(entry)}.`);
+  }
+  return out;
+}
+
+function parseSingleVolume(entry, topVolumeSet) {
+  if (typeof entry === "string") {
+    const parts = entry.split(":");
+    if (parts.length === 1) {
+      return { type: "anonymous", source: null, target: parts[0], readonly: false };
+    }
+    let source, target, opts;
+    if (parts.length === 2) {
+      source = parts[0];
+      target = parts[1];
+      opts = "";
+    } else {
+      // 3+ parts: take last as opts, rest as source+target. Doesn't try to
+      // handle Windows drive letters (compose docs say use forward slashes).
+      source = parts[0];
+      target = parts[1];
+      opts = parts.slice(2).join(":");
+    }
+    const readonly = /(^|,)ro(,|$)/.test(opts);
+    const type = isHostPath(source)
+      ? "bind"
+      : "named"; // named (declared at top-level OR implicit — both treated the same visually)
+    return { type, source, target, readonly };
+  }
+  if (entry && typeof entry === "object") {
+    let type = "bind";
+    if (entry.type === "volume") type = "named";
+    else if (entry.type === "tmpfs") type = "tmpfs";
+    else if (entry.type === "bind" || !entry.type) type = "bind";
+    return {
+      type,
+      source: entry.source != null ? String(entry.source) : null,
+      target: entry.target != null ? String(entry.target) : null,
+      readonly: !!entry.read_only,
+    };
+  }
+  return null;
+}
+
+function isHostPath(s) {
+  if (!s) return false;
+  return s.startsWith(".") || s.startsWith("/") || s.startsWith("~") || /^[a-zA-Z]:[/\\]/.test(s);
 }
 
 // Accepts:

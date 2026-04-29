@@ -291,6 +291,8 @@ button.primary:hover {
 
 .dot.service { background: var(--service); }
 .dot.network { background: var(--network); border: 1px dashed var(--bg); outline: 1px dashed var(--network); outline-offset: -1px; }
+.dot.volume { background: #334155; border: 1px solid #64748b; border-radius: 2px; }
+.dot.bind { background: #1e293b; border: 1px solid #a16207; border-radius: 2px; }
 
 .edge {
   display: inline-block;

@@ -4,14 +4,19 @@
 
 window.DockerScope = window.DockerScope || {};
 
-// Some UMD builds auto-register, others don't. Register defensively, only once.
+// fcose may need explicit registration; svg auto-registers on load.
 if (typeof cytoscape !== "undefined" && typeof cytoscapeFcose !== "undefined" && !window.__fcoseRegistered) {
   try { cytoscape.use(cytoscapeFcose); } catch (_) { /* already registered */ }
   window.__fcoseRegistered = true;
 }
-if (typeof cytoscape !== "undefined" && typeof cytoscapeSvg !== "undefined" && !window.__svgRegistered) {
-  try { cytoscape.use(cytoscapeSvg); } catch (_) { /* already registered */ }
-  window.__svgRegistered = true;
+
+// Computes a node width proportional to its label, with a sensible minimum.
+// Replaces `"width": "label"` which is deprecated in Cytoscape 3.30+.
+function widthFromLabel(min) {
+  return (ele) => {
+    const label = (ele.data("label") || "");
+    return Math.max(min, label.length * 7 + 18);
+  };
 }
 
 let cyInstance = null;
@@ -24,6 +29,7 @@ window.DockerScope.getCy = function () {
 
 window.DockerScope.renderGraph = function (containerEl, model, lintByService) {
   const elements = buildElements(model, lintByService || {});
+
 
   if (cyInstance) {
     cyInstance.destroy();
@@ -134,6 +140,67 @@ function buildElements(model, lintByService) {
     }
   }
 
+  // 5. Volume nodes — one per unique named volume actually used and one per
+  //    unique bind-mount source path. Anonymous and tmpfs volumes are skipped
+  //    in v0.4 (less common, would clutter the graph).
+  //
+  // Bind paths can contain "/", ".", ":" — all of which can break Cytoscape
+  // selector parsing if they appear in node IDs. We assign opaque short IDs
+  // (`vol_0`, `bind_0`, ...) and keep the human path in the label only.
+  const usedNamed = new Set();
+  const usedBind = new Set();
+  for (const svc of model.services) {
+    for (const v of svc.volumes) {
+      if (v.type === "named" && v.source) usedNamed.add(v.source);
+      else if (v.type === "bind" && v.source) usedBind.add(v.source);
+    }
+  }
+  const namedIds = new Map();
+  let namedIdx = 0;
+  for (const name of usedNamed) {
+    const id = `vol_${namedIdx++}`;
+    namedIds.set(name, id);
+    elements.push({
+      data: { id, label: name, kind: "volume" },
+      classes: "volume named",
+    });
+  }
+  const bindIds = new Map();
+  let bindIdx = 0;
+  for (const path of usedBind) {
+    const id = `bind_${bindIdx++}`;
+    bindIds.set(path, id);
+    elements.push({
+      data: { id, label: path, kind: "bind" },
+      classes: "volume bind",
+    });
+  }
+
+  // 6. Mount edges: service → volume node, label = target path (+ "ro" flag).
+  let mountIdx = 0;
+  for (const svc of model.services) {
+    for (const v of svc.volumes) {
+      if (!v.source) continue;
+      let targetId = null;
+      if (v.type === "named") targetId = namedIds.get(v.source);
+      else if (v.type === "bind") targetId = bindIds.get(v.source);
+      if (!targetId) continue;
+      const label = (v.target || "") + (v.readonly ? "  (ro)" : "");
+      const classes = ["mount-edge"];
+      if (v.readonly) classes.push("readonly");
+      elements.push({
+        data: {
+          id: `mnt_${mountIdx++}`,
+          source: `svc:${svc.name}`,
+          target: targetId,
+          kind: "mount",
+          label,
+        },
+        classes: classes.join(" "),
+      });
+    }
+  }
+
   return elements;
 }
 
@@ -153,7 +220,7 @@ function graphStyle() {
         "text-valign": "center",
         "text-halign": "center",
         "shape": "round-rectangle",
-        "width": "label",
+        "width": widthFromLabel(60),
         "height": 32,
         "padding": "10px",
         "text-outline-width": 0,
@@ -211,7 +278,7 @@ function graphStyle() {
         "text-valign": "center",
         "text-halign": "center",
         "shape": "round-rectangle",
-        "width": "label",
+        "width": widthFromLabel(60),
         "height": 24,
         "padding": "8px",
       },
@@ -236,6 +303,67 @@ function graphStyle() {
         "target-arrow-shape": "none",
         "curve-style": "bezier",
         "opacity": 0.55,
+      },
+    },
+    {
+      selector: "node.volume.named",
+      style: {
+        "background-color": "#334155",
+        "border-width": 1.5,
+        "border-color": "#64748b",
+        "label": "data(label)",
+        "color": "#cbd5e1",
+        "font-family": "JetBrains Mono, Courier New, monospace",
+        "font-size": 10,
+        "text-valign": "center",
+        "text-halign": "center",
+        "shape": "barrel",
+        "width": widthFromLabel(60),
+        "height": 32,
+        "padding": "8px",
+      },
+    },
+    {
+      selector: "node.volume.bind",
+      style: {
+        "background-color": "#1e293b",
+        "border-width": 1.5,
+        "border-color": "#a16207",
+        "label": "data(label)",
+        "color": "#fde68a",
+        "font-family": "JetBrains Mono, Courier New, monospace",
+        "font-size": 9,
+        "text-valign": "center",
+        "text-halign": "center",
+        "shape": "round-tag",
+        "width": widthFromLabel(60),
+        "height": 28,
+        "padding": "6px",
+      },
+    },
+    {
+      selector: "edge.mount-edge",
+      style: {
+        "width": 1,
+        "line-color": "#64748b",
+        "target-arrow-shape": "none",
+        "curve-style": "bezier",
+        "opacity": 0.7,
+        "label": "data(label)",
+        "color": "#94a3b8",
+        "font-size": 9,
+        "font-family": "JetBrains Mono, Courier New, monospace",
+        "text-rotation": "autorotate",
+        "text-margin-y": -8,
+        "text-background-color": "#0f172a",
+        "text-background-opacity": 0.85,
+        "text-background-padding": 2,
+      },
+    },
+    {
+      selector: "edge.mount-edge.readonly",
+      style: {
+        "line-style": "dashed",
       },
     },
   ];

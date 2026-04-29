@@ -4,18 +4,19 @@
 
 ### [Try the live demo →](https://dannyruizb.github.io/dockerscope/)
 
-![DockerScope rendering the sample compose with cluster topology: frontend and backend networks drawn as dashed containers wrapping their services, web/api inside frontend (with a dashed edge from api to backend for its second network), worker/cache/db inside backend. Service borders reflect lint severity — db red for the literal POSTGRES_PASSWORD, api/cache/worker amber, web clean — and the Lint panel below summarises 1 error and 9 warnings (collapsed in this capture).](screenshots/screenshot.png)
+![DockerScope rendering the sample compose: frontend and backend networks drawn as dashed compound containers wrapping their services. Lint severity in the borders (db red, api/cache/worker amber, web clean). Three volume nodes are also visible — db-data as a gray cylinder under db, ./nginx-conf as an amber tag attached to web with a dashed edge labelled "/etc/nginx/conf.d (ro)", and /var/run/docker.sock as an amber tag attached to worker.](screenshots/screenshot.png)
 
 DockerScope is a **client-side, zero-backend** tool that parses a `docker-compose.yml` file and renders:
 
 - A **cluster-style service graph** where each network is drawn as a dashed container that visually wraps the services running on it (its first declared network); extra-network membership becomes a dashed edge so nothing is lost.
 - A **lint panel** (collapsible) flagging floating tags, plaintext secrets, databases exposed on `0.0.0.0`, missing `restart` policy and missing healthchecks. Each finding ships with a hint on how to fix it, and affected services are highlighted on the graph.
 - A **port table** listing every published port grouped by service.
+- **Volumes on the graph** — named volumes appear as gray cylinders, host bind mounts as amber tags. Each mount edge is labelled with the path inside the container, with a dashed line for read-only mounts. Bind mounts are highlighted in amber because they're the most common way a container leaks host state (think `~/.ssh:ro` or `/var/run/docker.sock`).
 - **Paste, upload, or drag & drop** your compose file — everything runs in the browser.
 - **Pop out the graph** into a real OS window with the `↗` button — drag it to a second monitor while you keep editing in the main one.
 - **Download the graph** as PNG or SVG with the `⤓` button — the SVG keeps the original colors and is fully editable in Inkscape / Figma.
 
-🚧 Work in progress — v0.3.0.
+🚧 Work in progress — v0.4.0.
 
 ---
 
@@ -45,9 +46,10 @@ python3 -m http.server 8080
 - [x] **v0.1** — Parse compose, render service graph (`depends_on` + networks), list ports, file upload + drag & drop.
 - [x] **v0.2** — Static linter: floating tags, plaintext secrets in `environment`, public DB/cache ports, missing `restart`, missing healthchecks. Findings highlight affected services on the graph.
 - [x] **v0.3** — Export graph to PNG / SVG.
-- [ ] **v0.4** — Volumes as nodes; `extends` / `include` resolution.
-- [ ] **v0.5** — `Dockerfile` analyzer: drop a `Dockerfile` next to the compose to surface base image, multi-stage builds, and `EXPOSE` / `ENV` / `CMD` per service.
-- [ ] **v0.6** — Stack detection from `package.json` / `requirements.txt` / `go.mod` to label each service with its framework, DB driver, and queue client.
+- [x] **v0.4** — Volumes as nodes (named cylinders + host bind tags, mount edges labelled with container path, dashed for `:ro`).
+- [ ] **v0.5** — `extends` / `include` resolution (multi-file upload).
+- [ ] **v0.6** — `Dockerfile` analyzer: drop a `Dockerfile` next to the compose to surface base image, multi-stage builds, and `EXPOSE` / `ENV` / `CMD` per service.
+- [ ] **v0.7** — Stack detection from `package.json` / `requirements.txt` / `go.mod` to label each service with its framework, DB driver, and queue client.
 
 > **Out of scope, on purpose**: parsing the application source code (Express routes, SQL schemas, Python modules) is a different problem — that's a code analyzer, not a Docker analyzer. DockerScope stays focused on what Docker itself describes: services, images, networks, ports, volumes, and the build recipe.
 
