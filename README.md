@@ -2,6 +2,8 @@
 
 > Visual analyzer for `docker-compose.yml` — paste a compose file, see the architecture.
 
+![DockerScope rendering the sample compose: web → api → db/cache, worker → api/cache, with frontend/backend networks and a per-service port table.](screenshots/screenshot.png)
+
 DockerScope is a **client-side, zero-backend** tool that parses a `docker-compose.yml` file and renders:
 
 - A **service graph** showing dependencies (`depends_on`) and network membership.
