@@ -4,7 +4,7 @@
 
 ### [Try the live demo →](https://dannyruizb.github.io/dockerscope/)
 
-![DockerScope rendering the sample compose: web → api → db/cache, worker → api/cache, with frontend/backend networks and a per-service port table.](screenshots/screenshot.png)
+![DockerScope rendering the sample compose: graph of web → api → db/cache and worker → api/cache with frontend/backend networks. Service borders reflect lint severity (db red, api/cache/worker amber, web clean), and the Lint panel below shows findings grouped by service with hints — POSTGRES_PASSWORD as a literal env, no healthcheck on api, etc.](screenshots/screenshot.png)
 
 DockerScope is a **client-side, zero-backend** tool that parses a `docker-compose.yml` file and renders:
 
