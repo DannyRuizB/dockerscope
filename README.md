@@ -9,12 +9,11 @@
 DockerScope is a **client-side, zero-backend** tool that parses a `docker-compose.yml` file and renders:
 
 - A **service graph** showing dependencies (`depends_on`) and network membership.
+- A **lint panel** flagging floating tags, plaintext secrets, databases exposed on `0.0.0.0`, missing `restart` policy and missing healthchecks. Each finding ships with a hint on how to fix it, and affected services are highlighted on the graph.
 - A **port table** listing every published port grouped by service.
 - **Paste, upload, or drag & drop** your compose file — everything runs in the browser.
 
-Future versions add a **static linter** that flags common bad practices (`image: latest`, secrets in `environment`, `0.0.0.0` exposure, missing `restart`, missing healthchecks, etc.) and **PNG/SVG export**.
-
-🚧 Work in progress — v0.1.0.
+🚧 Work in progress — v0.2.0.
 
 ---
 
@@ -42,7 +41,7 @@ python3 -m http.server 8080
 ## Roadmap
 
 - [x] **v0.1** — Parse compose, render service graph (`depends_on` + networks), list ports, file upload + drag & drop.
-- [ ] **v0.2** — Static linter: `image: latest`, secrets in `environment`, `0.0.0.0`, missing `restart`, missing healthchecks.
+- [x] **v0.2** — Static linter: floating tags, plaintext secrets in `environment`, public DB/cache ports, missing `restart`, missing healthchecks. Findings highlight affected services on the graph.
 - [ ] **v0.3** — Export graph to PNG / SVG.
 - [ ] **v0.4** — Volumes as nodes; `extends` / `include` resolution.
 - [ ] **v0.5** — `Dockerfile` analyzer: drop a `Dockerfile` next to the compose to surface base image, multi-stage builds, and `EXPOSE` / `ENV` / `CMD` per service.
@@ -58,6 +57,16 @@ Pure HTML + CSS + vanilla JS. No build step, no bundler, no backend.
 - [`Cytoscape.js`](https://js.cytoscape.org/) + `cytoscape-dagre` — graph rendering and layered layout.
 
 All loaded from CDN; no `npm install` required.
+
+## Lint rules (v0.2)
+
+| Rule | Level | Triggered when |
+|------|-------|----------------|
+| `image-latest` / `image-untagged` | warn | image tag is `latest` or absent (Docker silently pulls `latest`) |
+| `env-secret` | **error** | `environment` has a key matching `*PASSWORD*`, `*SECRET*`, `*TOKEN*`, `*KEY*` with a literal value (interpolations like `${VAR}` are fine) |
+| `port-public` | warn | a database / cache image (Postgres, MySQL, Mongo, Redis, Elastic, Kafka…) publishes a port on `0.0.0.0` instead of `127.0.0.1:` |
+| `no-restart` | warn | service has no `restart` policy |
+| `no-healthcheck` | warn | service has no `healthcheck` |
 
 ## License
 

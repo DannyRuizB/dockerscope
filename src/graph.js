@@ -6,8 +6,8 @@ window.DockerScope = window.DockerScope || {};
 
 let cyInstance = null;
 
-window.DockerScope.renderGraph = function (containerEl, model) {
-  const elements = buildElements(model);
+window.DockerScope.renderGraph = function (containerEl, model, lintByService) {
+  const elements = buildElements(model, lintByService || {});
 
   if (cyInstance) {
     cyInstance.destroy();
@@ -40,13 +40,17 @@ window.DockerScope.renderGraph = function (containerEl, model) {
   });
 };
 
-function buildElements(model) {
+function buildElements(model, lintByService) {
   const elements = [];
 
   for (const svc of model.services) {
+    const lintLevel = lintByService[svc.name];
+    const classes = ["service"];
+    if (lintLevel === "error") classes.push("lint-error");
+    else if (lintLevel === "warn") classes.push("lint-warn");
     elements.push({
       data: { id: `svc:${svc.name}`, label: svc.name, kind: "service", image: svc.image || "" },
-      classes: "service",
+      classes: classes.join(" "),
     });
   }
   for (const net of model.networks) {
@@ -103,6 +107,20 @@ function graphStyle() {
         "height": 56,
         "text-outline-color": "#0f172a",
         "text-outline-width": 2,
+      },
+    },
+    {
+      selector: "node.service.lint-warn",
+      style: {
+        "border-width": 4,
+        "border-color": "#f59e0b",
+      },
+    },
+    {
+      selector: "node.service.lint-error",
+      style: {
+        "border-width": 4,
+        "border-color": "#ef4444",
       },
     },
     {

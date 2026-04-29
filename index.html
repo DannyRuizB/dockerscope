@@ -51,6 +51,12 @@
       <div id="graph"></div>
 
       <div class="pane-header">
+        <h2>Lint</h2>
+        <span id="lint-summary" class="lint-summary"></span>
+      </div>
+      <div id="lint" class="lint-empty">Analyze a compose file to see lint findings.</div>
+
+      <div class="pane-header">
         <h2>Ports</h2>
       </div>
       <div id="ports" class="ports-empty">Analyze a compose file to see exposed ports.</div>
@@ -58,7 +64,7 @@
   </main>
 
   <footer class="bottombar">
-    <span>v0.1.0</span>
+    <span>v0.2.0</span>
     <span>·</span>
     <span>MIT</span>
     <span>·</span>
@@ -70,6 +76,7 @@
   <script src="https://cdn.jsdelivr.net/npm/dagre@0.8.5/dist/dagre.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/cytoscape-dagre@2.5.0/cytoscape-dagre.js"></script>
   <script src="src/parser.js"></script>
+  <script src="src/linter.js"></script>
   <script src="src/graph.js"></script>
   <script src="src/app.js"></script>
 </body>

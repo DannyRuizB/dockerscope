@@ -1,7 +1,12 @@
 // Parses a docker-compose.yml string into a normalized model.
 // Output:
 // {
-//   services: [{ name, image, depends_on: [string], networks: [string], ports: [{published, target, protocol, host_ip}] }],
+//   services: [{
+//     name, image, depends_on, networks, ports,
+//     environment: [{key, value}],   // value is null for `KEY=` and for interpolation refs like ${X}
+//     restart: string|null,
+//     healthcheck: object|null,
+//   }],
 //   networks: [string],
 //   warnings: [string]
 // }
@@ -37,6 +42,9 @@ window.DockerScope.parseCompose = function (yamlText) {
       depends_on: parseDependsOn(raw.depends_on),
       networks: parseServiceNetworks(raw.networks),
       ports: parsePorts(raw.ports, warnings, name),
+      environment: parseEnvironment(raw.environment),
+      restart: typeof raw.restart === "string" ? raw.restart : null,
+      healthcheck: raw.healthcheck && typeof raw.healthcheck === "object" ? raw.healthcheck : null,
     });
   }
 
@@ -126,4 +134,26 @@ function toPort(v) {
   if (v == null || v === "") return null;
   const n = Number(v);
   return Number.isFinite(n) ? n : String(v);
+}
+
+// Accepts:
+//   { KEY: "value", FLAG: true, NUM: 42 }   → mapping
+//   ["KEY=value", "KEY", "KEY=${REF}"]      → list (KEY without = means "pass-through from host", value=null)
+function parseEnvironment(value) {
+  if (!value) return [];
+  if (Array.isArray(value)) {
+    return value.map(item => {
+      if (typeof item !== "string") return null;
+      const eq = item.indexOf("=");
+      if (eq === -1) return { key: item, value: null };
+      return { key: item.slice(0, eq), value: item.slice(eq + 1) };
+    }).filter(Boolean);
+  }
+  if (typeof value === "object") {
+    return Object.entries(value).map(([key, v]) => ({
+      key,
+      value: v == null ? null : String(v),
+    }));
+  }
+  return [];
 }
