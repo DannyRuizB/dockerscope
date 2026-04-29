@@ -2,6 +2,8 @@
 (function () {
   const SAMPLE_PATH = "samples/example.yml";
 
+  const POPOUT_STORAGE_KEY = "_dockerscope_popout_yaml";
+
   const $input = document.getElementById("compose-input");
   const $analyze = document.getElementById("analyze");
   const $loadSample = document.getElementById("load-sample");
@@ -12,12 +14,20 @@
   const $ports = document.getElementById("ports");
   const $lint = document.getElementById("lint");
   const $lintSummary = document.getElementById("lint-summary");
+  const $lintToggle = document.getElementById("lint-toggle");
+  const $popoutGraph = document.getElementById("popout-graph");
   const $error = document.getElementById("parse-error");
 
   $analyze.addEventListener("click", run);
   $loadSample.addEventListener("click", loadSample);
   $upload.addEventListener("click", () => $fileInput.click());
   $fileInput.addEventListener("change", onFilePicked);
+  $lintToggle.addEventListener("click", toggleLint);
+  $popoutGraph.addEventListener("click", popoutGraph);
+
+  // Run popout mode (if invoked via ?popout=graph) before anything else so the
+  // page renders in fullscreen-graph layout from the start.
+  maybeRunPopoutMode();
 
   // Analyze on Ctrl/Cmd+Enter inside the textarea
   $input.addEventListener("keydown", (e) => {
@@ -28,6 +38,49 @@
   });
 
   setupDragAndDrop();
+
+  function toggleLint() {
+    const collapsed = $lint.classList.toggle("collapsed");
+    $lintToggle.setAttribute("aria-expanded", collapsed ? "false" : "true");
+    $lintToggle.textContent = collapsed ? "▸" : "▾";
+  }
+
+  function popoutGraph() {
+    const yaml = $input.value.trim();
+    if (!yaml) {
+      showError("Nothing to pop out — paste or load a compose file first.");
+      return;
+    }
+    try {
+      localStorage.setItem(POPOUT_STORAGE_KEY, yaml);
+    } catch (err) {
+      showError("Could not stash the YAML for the new window: " + err.message);
+      return;
+    }
+    const features = "popup=yes,width=1200,height=800";
+    const win = window.open("?popout=graph", "_blank", features);
+    if (!win) {
+      showError("The browser blocked the pop-out window. Allow pop-ups for this site and try again.");
+    }
+  }
+
+  function maybeRunPopoutMode() {
+    const params = new URLSearchParams(location.search);
+    if (params.get("popout") !== "graph") return;
+    document.body.classList.add("popout-graph");
+    document.title = "DockerScope — graph";
+    let yaml;
+    try {
+      yaml = localStorage.getItem(POPOUT_STORAGE_KEY);
+      localStorage.removeItem(POPOUT_STORAGE_KEY);
+    } catch (_) { yaml = null; }
+    if (!yaml) {
+      $graph.innerHTML = '<div style="padding:24px;color:#94a3b8;font-family:system-ui">No data found in storage. Open the graph from the main window using the ↗ button.</div>';
+      return;
+    }
+    $input.value = yaml;
+    run();
+  }
 
   function onFilePicked(e) {
     const file = e.target.files && e.target.files[0];

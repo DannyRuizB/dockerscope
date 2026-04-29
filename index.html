@@ -39,7 +39,7 @@
     </section>
 
     <section class="output-pane">
-      <div class="pane-header">
+      <div class="pane-header graph-header">
         <h2>Graph</h2>
         <div class="legend">
           <span><i class="dot service"></i>service</span>
@@ -47,16 +47,20 @@
           <span><i class="edge depends"></i>depends_on</span>
           <span><i class="edge net"></i>network</span>
         </div>
+        <button id="popout-graph" class="header-btn" title="Open graph in a new window" type="button">↗</button>
       </div>
       <div id="graph"></div>
 
-      <div class="pane-header">
-        <h2>Lint</h2>
-        <span id="lint-summary" class="lint-summary"></span>
+      <div class="pane-header lint-header">
+        <div class="ph-left">
+          <h2>Lint</h2>
+          <span id="lint-summary" class="lint-summary"></span>
+        </div>
+        <button id="lint-toggle" class="header-btn" title="Collapse / expand" type="button" aria-expanded="true">▾</button>
       </div>
       <div id="lint" class="lint-empty">Analyze a compose file to see lint findings.</div>
 
-      <div class="pane-header">
+      <div class="pane-header ports-header">
         <h2>Ports</h2>
       </div>
       <div id="ports" class="ports-empty">Analyze a compose file to see exposed ports.</div>
@@ -64,7 +68,7 @@
   </main>
 
   <footer class="bottombar">
-    <span>v0.2.0</span>
+    <span>v0.2.1</span>
     <span>·</span>
     <span>MIT</span>
     <span>·</span>
@@ -73,8 +77,9 @@
 
   <script src="https://cdn.jsdelivr.net/npm/js-yaml@4.1.0/dist/js-yaml.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/cytoscape@3.30.2/dist/cytoscape.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/dagre@0.8.5/dist/dagre.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/cytoscape-dagre@2.5.0/cytoscape-dagre.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/layout-base@2.0.1/layout-base.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/cose-base@2.2.0/cose-base.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/cytoscape-fcose@2.2.0/cytoscape-fcose.js"></script>
   <script src="src/parser.js"></script>
   <script src="src/linter.js"></script>
   <script src="src/graph.js"></script>

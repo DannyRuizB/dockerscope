@@ -4,16 +4,17 @@
 
 ### [Try the live demo →](https://dannyruizb.github.io/dockerscope/)
 
-![DockerScope rendering the sample compose: graph of web → api → db/cache and worker → api/cache with frontend/backend networks. Service borders reflect lint severity (db red, api/cache/worker amber, web clean), and the Lint panel below shows findings grouped by service with hints — POSTGRES_PASSWORD as a literal env, no healthcheck on api, etc.](screenshots/screenshot.png)
+![DockerScope rendering the sample compose with cluster topology: frontend and backend networks drawn as dashed containers wrapping their services, web/api inside frontend (with a dashed edge from api to backend for its second network), worker/cache/db inside backend. Service borders reflect lint severity — db red for the literal POSTGRES_PASSWORD, api/cache/worker amber, web clean — and the Lint panel below summarises 1 error and 9 warnings (collapsed in this capture).](screenshots/screenshot.png)
 
 DockerScope is a **client-side, zero-backend** tool that parses a `docker-compose.yml` file and renders:
 
-- A **service graph** showing dependencies (`depends_on`) and network membership.
-- A **lint panel** flagging floating tags, plaintext secrets, databases exposed on `0.0.0.0`, missing `restart` policy and missing healthchecks. Each finding ships with a hint on how to fix it, and affected services are highlighted on the graph.
+- A **cluster-style service graph** where each network is drawn as a dashed container that visually wraps the services running on it (its first declared network); extra-network membership becomes a dashed edge so nothing is lost.
+- A **lint panel** (collapsible) flagging floating tags, plaintext secrets, databases exposed on `0.0.0.0`, missing `restart` policy and missing healthchecks. Each finding ships with a hint on how to fix it, and affected services are highlighted on the graph.
 - A **port table** listing every published port grouped by service.
 - **Paste, upload, or drag & drop** your compose file — everything runs in the browser.
+- **Pop out the graph** into a real OS window with the `↗` button — drag it to a second monitor while you keep editing in the main one.
 
-🚧 Work in progress — v0.2.0.
+🚧 Work in progress — v0.2.1.
 
 ---
 
@@ -54,7 +55,7 @@ python3 -m http.server 8080
 Pure HTML + CSS + vanilla JS. No build step, no bundler, no backend.
 
 - [`js-yaml`](https://github.com/nodeca/js-yaml) — YAML parsing.
-- [`Cytoscape.js`](https://js.cytoscape.org/) + `cytoscape-dagre` — graph rendering and layered layout.
+- [`Cytoscape.js`](https://js.cytoscape.org/) + [`cytoscape-fcose`](https://github.com/iVis-at-Bilkent/cytoscape.js-fcose) — graph rendering and force-directed layout with compound-node support (so networks can wrap their services).
 
 All loaded from CDN; no `npm install` required.
 

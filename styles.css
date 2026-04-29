@@ -109,6 +109,7 @@ body {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  gap: 12px;
   padding: 10px 14px;
   border-bottom: 1px solid var(--border);
   background: var(--bg-elev-2);
@@ -122,6 +123,31 @@ body {
   letter-spacing: 0.5px;
   color: var(--text-dim);
 }
+
+.ph-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.header-btn {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  padding: 2px 9px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 13px;
+  font-family: var(--mono);
+  line-height: 1.2;
+}
+
+.header-btn:hover {
+  border-color: var(--text-dim);
+  color: var(--text);
+}
+
+#lint.collapsed { display: none; }
 
 .actions {
   display: flex;
@@ -429,4 +455,43 @@ button.primary:hover {
   .layout {
     grid-template-columns: 1fr;
   }
+}
+
+/* Pop-out mode: graph fills the whole window. The OS handles moving it
+ * between monitors. Triggered by ?popout=graph in the URL. */
+body.popout-graph {
+  overflow: hidden;
+}
+
+body.popout-graph .topbar,
+body.popout-graph .bottombar,
+body.popout-graph .input-pane,
+body.popout-graph .lint-header,
+body.popout-graph #lint,
+body.popout-graph .ports-header,
+body.popout-graph #ports,
+body.popout-graph #popout-graph {
+  display: none !important;
+}
+
+body.popout-graph .layout {
+  grid-template-columns: 1fr;
+  padding: 0;
+  gap: 0;
+  height: 100vh;
+}
+
+body.popout-graph .output-pane {
+  border: none;
+  border-radius: 0;
+  height: 100vh;
+}
+
+body.popout-graph .graph-header {
+  border-radius: 0;
+}
+
+body.popout-graph #graph {
+  flex: 1 1 auto;
+  min-height: 0;
 }
