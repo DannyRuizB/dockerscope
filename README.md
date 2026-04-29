@@ -44,6 +44,10 @@ python3 -m http.server 8080
 - [ ] **v0.2** — Static linter: `image: latest`, secrets in `environment`, `0.0.0.0`, missing `restart`, missing healthchecks.
 - [ ] **v0.3** — Export graph to PNG / SVG.
 - [ ] **v0.4** — Volumes as nodes; `extends` / `include` resolution.
+- [ ] **v0.5** — `Dockerfile` analyzer: drop a `Dockerfile` next to the compose to surface base image, multi-stage builds, and `EXPOSE` / `ENV` / `CMD` per service.
+- [ ] **v0.6** — Stack detection from `package.json` / `requirements.txt` / `go.mod` to label each service with its framework, DB driver, and queue client.
+
+> **Out of scope, on purpose**: parsing the application source code (Express routes, SQL schemas, Python modules) is a different problem — that's a code analyzer, not a Docker analyzer. DockerScope stays focused on what Docker itself describes: services, images, networks, ports, volumes, and the build recipe.
 
 ## Stack
 
