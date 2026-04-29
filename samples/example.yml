@@ -1,0 +1,56 @@
+version: "3.9"
+
+services:
+  web:
+    image: nginx:1.27
+    ports:
+      - "80:80"
+      - "443:443"
+    depends_on:
+      - api
+    networks:
+      - frontend
+
+  api:
+    image: node:20-alpine
+    ports:
+      - "3000:3000"
+    environment:
+      DATABASE_URL: postgres://db:5432/app
+    depends_on:
+      - db
+      - cache
+    networks:
+      - frontend
+      - backend
+
+  db:
+    image: postgres:16
+    ports:
+      - "5432:5432"
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    networks:
+      - backend
+
+  cache:
+    image: redis:7
+    ports:
+      - "6379:6379/tcp"
+    networks:
+      - backend
+
+  worker:
+    image: myorg/worker:latest
+    depends_on:
+      - api
+      - cache
+    networks:
+      - backend
+
+networks:
+  frontend:
+  backend:
+
+volumes:
+  db-data:

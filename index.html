@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>DockerScope — visual analyzer for docker-compose.yml</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo">◇</span>
+      <h1>DockerScope</h1>
+      <span class="tag">visual analyzer for <code>docker-compose.yml</code></span>
+    </div>
+    <a class="repo-link" href="https://github.com/DannyRuizB/dockerscope" target="_blank" rel="noopener">GitHub</a>
+  </header>
+
+  <main class="layout">
+    <section class="input-pane">
+      <div class="pane-header">
+        <h2>Input</h2>
+        <div class="actions">
+          <button id="load-sample" type="button">Load sample</button>
+          <button id="upload" type="button">Upload file</button>
+          <button id="analyze" type="button" class="primary">Analyze</button>
+        </div>
+      </div>
+      <input id="file-input" type="file" accept=".yml,.yaml,application/yaml,text/yaml" hidden />
+      <div class="textarea-wrap">
+        <textarea
+          id="compose-input"
+          spellcheck="false"
+          placeholder="Paste your docker-compose.yml here, drop a file, or click Upload..."
+        ></textarea>
+        <div id="drop-overlay" class="drop-overlay" hidden>Drop docker-compose.yml here</div>
+      </div>
+      <div id="parse-error" class="error" hidden></div>
+    </section>
+
+    <section class="output-pane">
+      <div class="pane-header">
+        <h2>Graph</h2>
+        <div class="legend">
+          <span><i class="dot service"></i>service</span>
+          <span><i class="dot network"></i>network</span>
+          <span><i class="edge depends"></i>depends_on</span>
+          <span><i class="edge net"></i>network</span>
+        </div>
+      </div>
+      <div id="graph"></div>
+
+      <div class="pane-header">
+        <h2>Ports</h2>
+      </div>
+      <div id="ports" class="ports-empty">Analyze a compose file to see exposed ports.</div>
+    </section>
+  </main>
+
+  <footer class="bottombar">
+    <span>v0.1.0</span>
+    <span>·</span>
+    <span>MIT</span>
+    <span>·</span>
+    <span>Built by <a href="https://github.com/DannyRuizB" target="_blank" rel="noopener">DannyRuizB</a></span>
+  </footer>
+
+  <script src="https://cdn.jsdelivr.net/npm/js-yaml@4.1.0/dist/js-yaml.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/cytoscape@3.30.2/dist/cytoscape.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/dagre@0.8.5/dist/dagre.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/cytoscape-dagre@2.5.0/cytoscape-dagre.js"></script>
+  <script src="src/parser.js"></script>
+  <script src="src/graph.js"></script>
+  <script src="src/app.js"></script>
+</body>
+</html>
