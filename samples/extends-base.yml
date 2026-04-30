@@ -1,0 +1,28 @@
+# Reusable base services. Other compose files extend from this one.
+# Loaded together with extends-main.yml in the "Load sample → extends" demo.
+
+services:
+  app-base:
+    image: alpine:3.20
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    environment:
+      LOG_LEVEL: info
+      TZ: Europe/Madrid
+    networks:
+      - app-net
+
+  logger-base:
+    image: fluent/fluent-bit:3.0
+    restart: unless-stopped
+    volumes:
+      - ./fluent-bit.conf:/fluent-bit/etc/fluent-bit.conf:ro
+    networks:
+      - app-net
+
+networks:
+  app-net:

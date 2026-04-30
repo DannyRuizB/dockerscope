@@ -1,0 +1,44 @@
+# Main compose. Two services extend from base services in extends-base.yml.
+# Also loads extends-base.yml in the demo so DockerScope can resolve them.
+
+services:
+  api:
+    extends:
+      file: extends-base.yml
+      service: app-base
+    image: node:20-alpine
+    ports:
+      - "3000:3000"
+    environment:
+      DATABASE_URL: postgres://db:5432/app
+    depends_on:
+      - db
+    networks:
+      - app-net
+      - db-net
+
+  db:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: app
+      POSTGRES_USER: app
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    networks:
+      - db-net
+
+  logger:
+    extends:
+      file: extends-base.yml
+      service: logger-base
+    environment:
+      LOG_LEVEL: debug
+
+networks:
+  app-net:
+  db-net:
+
+volumes:
+  db-data:

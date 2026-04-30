@@ -15,8 +15,12 @@
 
 window.DockerScope = window.DockerScope || {};
 
-window.DockerScope.parseCompose = function (yamlText) {
+// fileMap is an optional Map<basenameOfYamlFile, yamlString> used to resolve
+// `extends.file` references. If omitted or empty, extends.file references emit
+// a warning and the child service keeps its own (non-merged) properties.
+window.DockerScope.parseCompose = function (yamlText, fileMap) {
   const warnings = [];
+  fileMap = fileMap || new Map();
   let doc;
   try {
     doc = jsyaml.load(yamlText);
@@ -25,6 +29,16 @@ window.DockerScope.parseCompose = function (yamlText) {
   }
   if (!doc || typeof doc !== "object") {
     throw new Error("Empty or invalid compose file.");
+  }
+
+  // Pre-pass: resolve every service's `extends` chain into a flat object so the
+  // rest of the parser doesn't need to know about extends at all.
+  if (doc.services && typeof doc.services === "object") {
+    const flat = {};
+    for (const [name, svc] of Object.entries(doc.services)) {
+      flat[name] = resolveServiceExtends(svc, name, doc.services, fileMap, warnings, 0);
+    }
+    doc.services = flat;
   }
 
   const services = [];
@@ -223,6 +237,114 @@ function parseSingleVolume(entry, topVolumeSet) {
 function isHostPath(s) {
   if (!s) return false;
   return s.startsWith(".") || s.startsWith("/") || s.startsWith("~") || /^[a-zA-Z]:[/\\]/.test(s);
+}
+
+// Resolves `extends` for a single service, recursively. Returns the merged
+// service object with `extends` removed. Loops or chains > 5 are detected and
+// the chain is cut with a warning.
+//
+// Extends shapes supported:
+//   extends: "other-service"                          (same file, short form)
+//   extends: { service: "other-service" }             (same file, long form)
+//   extends: { file: "base.yml", service: "..." }     (other file, looked up
+//                                                       in fileMap by basename)
+function resolveServiceExtends(svc, name, sameDocServices, fileMap, warnings, depth) {
+  if (!svc || typeof svc !== "object" || svc.extends == null) return svc;
+  if (depth > 5) {
+    warnings.push(`Service "${name}": extends chain too deep (loop?). Stopping at depth ${depth}.`);
+    return stripExtends(svc);
+  }
+
+  let baseSvc = null;
+  if (typeof svc.extends === "string") {
+    baseSvc = sameDocServices[svc.extends];
+    if (!baseSvc) {
+      warnings.push(`Service "${name}": extends "${svc.extends}" not found in this file.`);
+      return stripExtends(svc);
+    }
+    baseSvc = resolveServiceExtends(baseSvc, svc.extends, sameDocServices, fileMap, warnings, depth + 1);
+  } else if (typeof svc.extends === "object") {
+    const targetService = svc.extends.service;
+    const targetFile = svc.extends.file;
+    if (!targetService) {
+      warnings.push(`Service "${name}": extends.service is required.`);
+      return stripExtends(svc);
+    }
+    if (targetFile) {
+      const basename = pathBasename(targetFile);
+      const fileContent = fileMap.get(basename);
+      if (!fileContent) {
+        warnings.push(`Service "${name}": extends file "${targetFile}" not found among uploaded files (looking for "${basename}"). Upload it together with the main compose to resolve the merge.`);
+        return stripExtends(svc);
+      }
+      let baseDoc;
+      try {
+        baseDoc = jsyaml.load(fileContent);
+      } catch (err) {
+        warnings.push(`Service "${name}": failed to parse extends file "${targetFile}": ${err.message}`);
+        return stripExtends(svc);
+      }
+      const baseSvcMap = (baseDoc && baseDoc.services) || {};
+      baseSvc = baseSvcMap[targetService];
+      if (!baseSvc) {
+        warnings.push(`Service "${name}": service "${targetService}" not found in "${targetFile}".`);
+        return stripExtends(svc);
+      }
+      baseSvc = resolveServiceExtends(baseSvc, targetService, baseSvcMap, fileMap, warnings, depth + 1);
+    } else {
+      baseSvc = sameDocServices[targetService];
+      if (!baseSvc) {
+        warnings.push(`Service "${name}": extends "${targetService}" not found in this file.`);
+        return stripExtends(svc);
+      }
+      baseSvc = resolveServiceExtends(baseSvc, targetService, sameDocServices, fileMap, warnings, depth + 1);
+    }
+  } else {
+    return stripExtends(svc);
+  }
+
+  return mergeService(baseSvc, stripExtends(svc));
+}
+
+function stripExtends(svc) {
+  if (!svc || typeof svc !== "object") return svc;
+  const { extends: _drop, ...rest } = svc;
+  return rest;
+}
+
+function pathBasename(p) {
+  if (!p) return p;
+  return String(p).split(/[\\/]/).pop();
+}
+
+// Compose's merge convention for a service that extends another:
+// - Mapping-like fields (environment, labels, healthcheck, deploy.resources):
+//   shallow merge, child keys override.
+// - Array-like fields (volumes, ports, depends_on, networks list-form, command
+//   words): the child appends to the parent.
+// - Scalars (image, restart, container_name, ...): child overrides parent.
+// - If parent and child have incompatible shapes for the same key (one array,
+//   the other mapping), child wins.
+function mergeService(parent, child) {
+  if (!parent) return child;
+  if (!child) return parent;
+  const merged = { ...parent };
+  for (const [key, val] of Object.entries(child)) {
+    const pv = parent[key];
+    if (pv == null) {
+      merged[key] = val;
+    } else if (Array.isArray(pv) && Array.isArray(val)) {
+      merged[key] = [...pv, ...val];
+    } else if (
+      typeof pv === "object" && !Array.isArray(pv) &&
+      typeof val === "object" && !Array.isArray(val)
+    ) {
+      merged[key] = { ...pv, ...val };
+    } else {
+      merged[key] = val;
+    }
+  }
+  return merged;
 }
 
 // Accepts:

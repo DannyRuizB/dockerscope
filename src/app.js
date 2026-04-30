@@ -1,15 +1,27 @@
 // Wires UI: load sample, analyze, render graph, render ports.
 (function () {
-  const SAMPLE_PATH = "samples/example.yml";
-
   const POPOUT_STORAGE_KEY = "_dockerscope_popout_yaml";
+
+  const SAMPLES = {
+    basic: ["samples/example.yml"],                              // first one becomes main
+    extends: ["samples/extends-main.yml", "samples/extends-base.yml"],
+  };
+
+  // fileMap holds every uploaded/loaded YAML by basename so the parser can
+  // resolve `extends.file` references. The "main" YAML is whatever's currently
+  // in the textarea; fileMap is the bag of side files (and also includes the
+  // main itself, indexed by its basename when known).
+  const fileMap = new Map();
+  let mainBasename = null;
 
   const $input = document.getElementById("compose-input");
   const $analyze = document.getElementById("analyze");
   const $loadSample = document.getElementById("load-sample");
+  const $sampleMenu = document.getElementById("sample-menu");
   const $upload = document.getElementById("upload");
   const $fileInput = document.getElementById("file-input");
   const $dropOverlay = document.getElementById("drop-overlay");
+  const $filesLoaded = document.getElementById("files-loaded");
   const $graph = document.getElementById("graph");
   const $ports = document.getElementById("ports");
   const $lint = document.getElementById("lint");
@@ -21,9 +33,12 @@
   const $error = document.getElementById("parse-error");
 
   $analyze.addEventListener("click", run);
-  $loadSample.addEventListener("click", loadSample);
+  $loadSample.addEventListener("click", toggleSampleMenu);
+  $sampleMenu.addEventListener("click", onSampleItemClick);
+  document.addEventListener("click", maybeCloseSampleMenu);
   $upload.addEventListener("click", () => $fileInput.click());
   $fileInput.addEventListener("change", onFilePicked);
+  $filesLoaded.addEventListener("click", onFileChipClick);
   $lintToggle.addEventListener("click", toggleLint);
   $popoutGraph.addEventListener("click", popoutGraph);
   $exportToggle.addEventListener("click", toggleExportMenu);
@@ -125,6 +140,11 @@
     }
     try {
       localStorage.setItem(POPOUT_STORAGE_KEY, yaml);
+      // Stash fileMap too so the popout window can resolve `extends`.
+      const fileMapObj = {};
+      for (const [k, v] of fileMap) fileMapObj[k] = v;
+      localStorage.setItem(POPOUT_STORAGE_KEY + "_files", JSON.stringify(fileMapObj));
+      localStorage.setItem(POPOUT_STORAGE_KEY + "_main", mainBasename || "");
     } catch (err) {
       showError("Could not stash the YAML for the new window: " + err.message);
       return;
@@ -145,6 +165,15 @@
     try {
       yaml = localStorage.getItem(POPOUT_STORAGE_KEY);
       localStorage.removeItem(POPOUT_STORAGE_KEY);
+      const filesJson = localStorage.getItem(POPOUT_STORAGE_KEY + "_files");
+      localStorage.removeItem(POPOUT_STORAGE_KEY + "_files");
+      if (filesJson) {
+        const obj = JSON.parse(filesJson);
+        for (const [k, v] of Object.entries(obj)) fileMap.set(k, v);
+      }
+      const main = localStorage.getItem(POPOUT_STORAGE_KEY + "_main");
+      localStorage.removeItem(POPOUT_STORAGE_KEY + "_main");
+      if (main) mainBasename = main;
     } catch (_) { yaml = null; }
     if (!yaml) {
       $graph.innerHTML = '<div style="padding:24px;color:#94a3b8;font-family:system-ui">No data found in storage. Open the graph from the main window using the ↗ button.</div>';
@@ -155,22 +184,94 @@
   }
 
   function onFilePicked(e) {
-    const file = e.target.files && e.target.files[0];
-    if (file) loadFile(file);
+    const files = e.target.files;
+    if (files && files.length > 0) loadFiles(Array.from(files));
     e.target.value = "";
   }
 
-  function loadFile(file) {
-    if (!/\.(ya?ml)$/i.test(file.name) && !/ya?ml/.test(file.type)) {
-      showError(`"${file.name}" doesn't look like a YAML file. Loading anyway.`);
-    }
-    const reader = new FileReader();
-    reader.onload = () => {
-      $input.value = reader.result;
+  // Reads N files, registers each one in fileMap by basename, and uses the
+  // first one as the main (drops it into the textarea, runs analyze).
+  function loadFiles(files) {
+    if (!files || files.length === 0) return;
+    let firstReadDone = false;
+    let pending = files.length;
+    let firstError = null;
+
+    const onAllDone = () => {
+      renderFilesLoaded();
+      if (firstError) showError(firstError);
       run();
     };
-    reader.onerror = () => showError(`Could not read "${file.name}".`);
-    reader.readAsText(file);
+
+    files.forEach((file, idx) => {
+      if (!/\.(ya?ml)$/i.test(file.name) && !/ya?ml/.test(file.type)) {
+        firstError = firstError || `"${file.name}" doesn't look like a YAML file. Loading anyway.`;
+      }
+      const reader = new FileReader();
+      reader.onload = () => {
+        const basename = file.name;
+        fileMap.set(basename, reader.result);
+        if (idx === 0) {
+          mainBasename = basename;
+          $input.value = reader.result;
+          firstReadDone = true;
+        }
+        if (--pending === 0) onAllDone();
+      };
+      reader.onerror = () => {
+        firstError = firstError || `Could not read "${file.name}".`;
+        if (--pending === 0) onAllDone();
+      };
+      reader.readAsText(file);
+    });
+  }
+
+  function renderFilesLoaded() {
+    if (fileMap.size === 0) {
+      $filesLoaded.setAttribute("hidden", "");
+      $filesLoaded.innerHTML = "";
+      return;
+    }
+    $filesLoaded.removeAttribute("hidden");
+    const chips = [];
+    for (const name of fileMap.keys()) {
+      const isMain = name === mainBasename;
+      chips.push(`
+        <span class="file-chip ${isMain ? "main" : ""}" data-name="${escapeHtml(name)}" title="${isMain ? "main file" : "click to make main"}">
+          ${escapeHtml(name)}${isMain ? " · main" : ""}
+          <span class="x" data-action="remove" title="Remove">✕</span>
+        </span>
+      `);
+    }
+    $filesLoaded.innerHTML = chips.join("");
+  }
+
+  function onFileChipClick(e) {
+    const chip = e.target.closest(".file-chip");
+    if (!chip) return;
+    const name = chip.dataset.name;
+    if (!name) return;
+    if (e.target.dataset.action === "remove") {
+      fileMap.delete(name);
+      if (mainBasename === name) {
+        mainBasename = fileMap.size > 0 ? fileMap.keys().next().value : null;
+        if (mainBasename) $input.value = fileMap.get(mainBasename) || "";
+        else $input.value = "";
+      }
+      renderFilesLoaded();
+      run();
+      return;
+    }
+    // Click on chip body → make this file the main
+    if (mainBasename === name) return;
+    mainBasename = name;
+    $input.value = fileMap.get(name) || "";
+    renderFilesLoaded();
+    run();
+  }
+
+  function pathBasename(p) {
+    return String(p).split(/[\\/]/).pop();
   }
 
   function setupDragAndDrop() {
@@ -199,8 +300,8 @@
       e.preventDefault();
       depth = 0;
       hideOverlay();
-      const file = e.dataTransfer.files && e.dataTransfer.files[0];
-      if (file) loadFile(file);
+      const files = e.dataTransfer.files && Array.from(e.dataTransfer.files);
+      if (files && files.length > 0) loadFiles(files);
     });
   }
 
@@ -208,11 +309,51 @@
     return e.dataTransfer && Array.from(e.dataTransfer.types || []).includes("Files");
   }
 
-  async function loadSample() {
+  function toggleSampleMenu(e) {
+    e.stopPropagation();
+    const open = $sampleMenu.hasAttribute("hidden");
+    if (open) {
+      $sampleMenu.removeAttribute("hidden");
+      $loadSample.setAttribute("aria-expanded", "true");
+    } else {
+      $sampleMenu.setAttribute("hidden", "");
+      $loadSample.setAttribute("aria-expanded", "false");
+    }
+  }
+
+  function maybeCloseSampleMenu(e) {
+    if ($sampleMenu.contains(e.target) || e.target === $loadSample) return;
+    $sampleMenu.setAttribute("hidden", "");
+    $loadSample.setAttribute("aria-expanded", "false");
+  }
+
+  async function onSampleItemClick(e) {
+    const btn = e.target.closest("button[data-sample]");
+    if (!btn) return;
+    $sampleMenu.setAttribute("hidden", "");
+    $loadSample.setAttribute("aria-expanded", "false");
+    const key = btn.dataset.sample;
+    const paths = SAMPLES[key];
+    if (!paths) return;
     try {
-      const res = await fetch(SAMPLE_PATH);
-      if (!res.ok) throw new Error(`Sample not reachable (HTTP ${res.status}). Open the page via a local server.`);
-      $input.value = await res.text();
+      // Reset fileMap so a sample load starts clean
+      fileMap.clear();
+      mainBasename = null;
+      let mainText = null;
+      for (let i = 0; i < paths.length; i++) {
+        const path = paths[i];
+        const res = await fetch(path);
+        if (!res.ok) throw new Error(`Sample not reachable (HTTP ${res.status}): ${path}. Open the page via a local server.`);
+        const text = await res.text();
+        const basename = pathBasename(path);
+        fileMap.set(basename, text);
+        if (i === 0) {
+          mainBasename = basename;
+          mainText = text;
+        }
+      }
+      $input.value = mainText;
+      renderFilesLoaded();
       run();
     } catch (err) {
       showError(err.message);
@@ -229,9 +370,12 @@
       $graph.innerHTML = "";
       return;
     }
+    // Sync the textarea content into fileMap under the main basename so the
+    // user can edit the main YAML inline and re-analyze without re-uploading.
+    if (mainBasename) fileMap.set(mainBasename, text);
     let model;
     try {
-      model = window.DockerScope.parseCompose(text);
+      model = window.DockerScope.parseCompose(text, fileMap);
     } catch (err) {
       showError(err.message);
       return;

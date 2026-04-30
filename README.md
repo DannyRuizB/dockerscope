@@ -15,8 +15,9 @@ DockerScope is a **client-side, zero-backend** tool that parses a `docker-compos
 - **Paste, upload, or drag & drop** your compose file — everything runs in the browser.
 - **Pop out the graph** into a real OS window with the `↗` button — drag it to a second monitor while you keep editing in the main one.
 - **Download the graph** as PNG or SVG with the `⤓` button — the SVG keeps the original colors and is fully editable in Inkscape / Figma.
+- **Multi-file `extends`** — drop the main compose **and** the file it extends from at the same time, and DockerScope merges them client-side so the graph reflects the resolved services. File chips above the textarea let you switch which one is the "main".
 
-🚧 Work in progress — v0.4.0.
+🚧 Work in progress — v0.5.0.
 
 ---
 
@@ -47,9 +48,10 @@ python3 -m http.server 8080
 - [x] **v0.2** — Static linter: floating tags, plaintext secrets in `environment`, public DB/cache ports, missing `restart`, missing healthchecks. Findings highlight affected services on the graph.
 - [x] **v0.3** — Export graph to PNG / SVG.
 - [x] **v0.4** — Volumes as nodes (named cylinders + host bind tags, mount edges labelled with container path, dashed for `:ro`).
-- [ ] **v0.5** — `extends` / `include` resolution (multi-file upload).
-- [ ] **v0.6** — `Dockerfile` analyzer: drop a `Dockerfile` next to the compose to surface base image, multi-stage builds, and `EXPOSE` / `ENV` / `CMD` per service.
-- [ ] **v0.7** — Stack detection from `package.json` / `requirements.txt` / `go.mod` to label each service with its framework, DB driver, and queue client.
+- [x] **v0.5** — `extends` resolution across multiple uploaded files (base by `extends.file` is matched by basename, services are merged with the standard compose convention: child overrides scalars, mappings shallow-merge, arrays concat).
+- [ ] **v0.6** — `include` resolution (importing whole composes).
+- [ ] **v0.7** — `Dockerfile` analyzer: drop a `Dockerfile` next to the compose to surface base image, multi-stage builds, and `EXPOSE` / `ENV` / `CMD` per service.
+- [ ] **v0.8** — Stack detection from `package.json` / `requirements.txt` / `go.mod` to label each service with its framework, DB driver, and queue client.
 
 > **Out of scope, on purpose**: parsing the application source code (Express routes, SQL schemas, Python modules) is a different problem — that's a code analyzer, not a Docker analyzer. DockerScope stays focused on what Docker itself describes: services, images, networks, ports, volumes, and the build recipe.
 
