@@ -5,6 +5,7 @@
   const SAMPLES = {
     basic: ["samples/example.yml"],                              // first one becomes main
     extends: ["samples/extends-main.yml", "samples/extends-base.yml"],
+    include: ["samples/include-main.yml", "samples/include-services.yml", "samples/include-proxy.yml"],
   };
 
   // fileMap holds every uploaded/loaded YAML by basename so the parser can

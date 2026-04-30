@@ -16,8 +16,8 @@
 window.DockerScope = window.DockerScope || {};
 
 // fileMap is an optional Map<basenameOfYamlFile, yamlString> used to resolve
-// `extends.file` references. If omitted or empty, extends.file references emit
-// a warning and the child service keeps its own (non-merged) properties.
+// `extends.file` and `include:` references. If omitted or empty, those
+// references emit warnings and resolution is skipped.
 window.DockerScope.parseCompose = function (yamlText, fileMap) {
   const warnings = [];
   fileMap = fileMap || new Map();
@@ -30,6 +30,11 @@ window.DockerScope.parseCompose = function (yamlText, fileMap) {
   if (!doc || typeof doc !== "object") {
     throw new Error("Empty or invalid compose file.");
   }
+
+  // Pre-pre-pass: resolve `include:` first so the rest of the pipeline sees a
+  // single merged compose. Each included file is parsed and layered under the
+  // caller (caller wins on name collisions, matching Compose semantics).
+  doc = resolveIncludes(doc, fileMap, warnings, 0);
 
   // Pre-pass: resolve every service's `extends` chain into a flat object so the
   // rest of the parser doesn't need to know about extends at all.
@@ -335,6 +340,91 @@ function mergeService(parent, child) {
       merged[key] = val;
     } else if (Array.isArray(pv) && Array.isArray(val)) {
       merged[key] = [...pv, ...val];
+    } else if (
+      typeof pv === "object" && !Array.isArray(pv) &&
+      typeof val === "object" && !Array.isArray(val)
+    ) {
+      merged[key] = { ...pv, ...val };
+    } else {
+      merged[key] = val;
+    }
+  }
+  return merged;
+}
+
+// Resolves `include:` (Compose v2.20+) by merging every included file into
+// the caller. Each entry can be a string path or `{path, env_file?,
+// project_directory?}` — only the path matters, the rest is browser-irrelevant
+// and is reported as a warning. Files are looked up by basename in fileMap.
+// Recursion is bounded at depth 5.
+//
+// Merge semantics: included files are layered first (in declaration order), and
+// the caller's own content is layered on top — so the caller wins on name
+// collisions (services, networks, volumes), matching Compose's rule that the
+// file doing the include is the source of truth.
+function resolveIncludes(doc, fileMap, warnings, depth) {
+  if (!doc || typeof doc !== "object" || doc.include == null) return doc;
+  const { include: includes, ...rest } = doc;
+  if (depth > 5) {
+    warnings.push(`include chain too deep (loop?). Stopping at depth ${depth}.`);
+    return rest;
+  }
+  if (!Array.isArray(includes)) {
+    warnings.push("`include` must be a list.");
+    return rest;
+  }
+
+  let merged = {};
+  for (const entry of includes) {
+    let path;
+    if (typeof entry === "string") {
+      path = entry;
+    } else if (entry && typeof entry === "object") {
+      path = entry.path;
+      if (entry.env_file || entry.project_directory) {
+        warnings.push(`include "${path || "?"}": env_file/project_directory ignored (DockerScope runs in the browser, no filesystem access).`);
+      }
+    } else {
+      warnings.push(`include: skipped invalid entry ${JSON.stringify(entry)}.`);
+      continue;
+    }
+    if (!path) {
+      warnings.push("include: missing path.");
+      continue;
+    }
+    const basename = pathBasename(path);
+    const fileContent = fileMap.get(basename);
+    if (!fileContent) {
+      warnings.push(`include file "${path}" not found among uploaded files (looking for "${basename}"). Upload it together with the main compose to resolve the merge.`);
+      continue;
+    }
+    let includedDoc;
+    try {
+      includedDoc = jsyaml.load(fileContent);
+    } catch (err) {
+      warnings.push(`include: failed to parse "${path}": ${err.message}`);
+      continue;
+    }
+    if (!includedDoc || typeof includedDoc !== "object") continue;
+    includedDoc = resolveIncludes(includedDoc, fileMap, warnings, depth + 1);
+    merged = mergeCompose(merged, includedDoc);
+  }
+
+  return mergeCompose(merged, rest);
+}
+
+// Top-level merge of two compose docs. Mapping fields (services, networks,
+// volumes, configs, secrets) are shallow-merged at the key level — child keys
+// override parent keys but the values themselves are not deep-merged. Scalars
+// (version, name) → child wins.
+function mergeCompose(parent, child) {
+  if (!parent || typeof parent !== "object") return child;
+  if (!child || typeof child !== "object") return parent;
+  const merged = { ...parent };
+  for (const [key, val] of Object.entries(child)) {
+    const pv = parent[key];
+    if (pv == null) {
+      merged[key] = val;
     } else if (
       typeof pv === "object" && !Array.isArray(pv) &&
       typeof val === "object" && !Array.isArray(val)

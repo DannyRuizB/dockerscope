@@ -1,0 +1,12 @@
+# Edge proxy included by include-main.yml.
+
+services:
+  proxy:
+    image: nginx:1.27
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    depends_on:
+      - api
+    networks:
+      - app-net

@@ -1,0 +1,35 @@
+# Main compose. Pulls services in from two other files via `include`.
+# DockerScope merges them client-side: services, networks and volumes from
+# the included files end up in the same model as the ones declared here.
+# In case of name collisions, the main file wins.
+
+include:
+  - include-services.yml
+  - include-proxy.yml
+
+services:
+  api:
+    image: node:20-alpine
+    ports:
+      - "3000:3000"
+    depends_on:
+      - logger
+      - db
+    networks:
+      - app-net
+
+  db:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_PASSWORD: changeme
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    networks:
+      - app-net
+
+networks:
+  app-net:
+
+volumes:
+  db-data:

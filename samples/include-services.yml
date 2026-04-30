@@ -1,0 +1,18 @@
+# Reusable services included by include-main.yml.
+
+services:
+  logger:
+    image: fluent/fluent-bit:3.0
+    restart: unless-stopped
+    volumes:
+      - ./fluent-bit.conf:/fluent-bit/etc/fluent-bit.conf:ro
+    networks:
+      - app-net
+
+  metrics:
+    image: prom/prometheus:v2.50.0
+    restart: unless-stopped
+    ports:
+      - "9090:9090"
+    networks:
+      - app-net
