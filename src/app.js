@@ -6,7 +6,11 @@
     basic: ["samples/example.yml"],                              // first one becomes main
     extends: ["samples/extends-main.yml", "samples/extends-base.yml"],
     include: ["samples/include-main.yml", "samples/include-services.yml", "samples/include-proxy.yml"],
+    dockerfile: ["samples/dockerfile-main.yml", "samples/api.Dockerfile", "samples/worker.Dockerfile"],
   };
+
+  const YAML_RE = /\.(ya?ml)$/i;
+  const DOCKERFILE_RE = /(^|[\\/])Dockerfile($|[._-])|\.Dockerfile$/i;
 
   // fileMap holds every uploaded/loaded YAML by basename so the parser can
   // resolve `extends.file` references. The "main" YAML is whatever's currently
@@ -25,6 +29,7 @@
   const $filesLoaded = document.getElementById("files-loaded");
   const $graph = document.getElementById("graph");
   const $ports = document.getElementById("ports");
+  const $dockerfiles = document.getElementById("dockerfiles");
   const $lint = document.getElementById("lint");
   const $lintSummary = document.getElementById("lint-summary");
   const $lintToggle = document.getElementById("lint-toggle");
@@ -190,13 +195,14 @@
     e.target.value = "";
   }
 
-  // Reads N files, registers each one in fileMap by basename, and uses the
-  // first one as the main (drops it into the textarea, runs analyze).
+  // Reads N files, registers each one in fileMap by basename. The first file
+  // that looks like a YAML compose becomes the new main (drops into textarea).
+  // Dockerfiles are kept in fileMap but never become main.
   function loadFiles(files) {
     if (!files || files.length === 0) return;
-    let firstReadDone = false;
     let pending = files.length;
     let firstError = null;
+    const firstYamlIdx = files.findIndex(f => YAML_RE.test(f.name) || /ya?ml/.test(f.type || ""));
 
     const onAllDone = () => {
       renderFilesLoaded();
@@ -205,17 +211,18 @@
     };
 
     files.forEach((file, idx) => {
-      if (!/\.(ya?ml)$/i.test(file.name) && !/ya?ml/.test(file.type)) {
-        firstError = firstError || `"${file.name}" doesn't look like a YAML file. Loading anyway.`;
+      const isYaml = YAML_RE.test(file.name) || /ya?ml/.test(file.type || "");
+      const isDockerfile = DOCKERFILE_RE.test(file.name);
+      if (!isYaml && !isDockerfile) {
+        firstError = firstError || `"${file.name}" doesn't look like a YAML or Dockerfile. Loading anyway.`;
       }
       const reader = new FileReader();
       reader.onload = () => {
         const basename = file.name;
         fileMap.set(basename, reader.result);
-        if (idx === 0) {
+        if (idx === firstYamlIdx) {
           mainBasename = basename;
           $input.value = reader.result;
-          firstReadDone = true;
         }
         if (--pending === 0) onAllDone();
       };
@@ -237,8 +244,13 @@
     const chips = [];
     for (const name of fileMap.keys()) {
       const isMain = name === mainBasename;
+      const isDockerfile = DOCKERFILE_RE.test(name);
+      const cls = ["file-chip", isMain ? "main" : "", isDockerfile ? "dockerfile" : ""].filter(Boolean).join(" ");
+      const title = isDockerfile
+        ? "Dockerfile (linked from a service's build directive)"
+        : (isMain ? "main file" : "click to make main");
       chips.push(`
-        <span class="file-chip ${isMain ? "main" : ""}" data-name="${escapeHtml(name)}" title="${isMain ? "main file" : "click to make main"}">
+        <span class="${cls}" data-name="${escapeHtml(name)}" title="${title}">
           ${escapeHtml(name)}${isMain ? " · main" : ""}
           <span class="x" data-action="remove" title="Remove">✕</span>
         </span>
@@ -255,15 +267,19 @@
     if (e.target.dataset.action === "remove") {
       fileMap.delete(name);
       if (mainBasename === name) {
-        mainBasename = fileMap.size > 0 ? fileMap.keys().next().value : null;
-        if (mainBasename) $input.value = fileMap.get(mainBasename) || "";
-        else $input.value = "";
+        // Pick the next YAML in fileMap as the new main, if any
+        mainBasename = null;
+        for (const k of fileMap.keys()) {
+          if (YAML_RE.test(k)) { mainBasename = k; break; }
+        }
+        $input.value = mainBasename ? (fileMap.get(mainBasename) || "") : "";
       }
       renderFilesLoaded();
       run();
       return;
     }
-    // Click on chip body → make this file the main
+    // Click on chip body → make this file the main, but only if it's a YAML
+    if (!YAML_RE.test(name)) return;
     if (mainBasename === name) return;
     mainBasename = name;
     $input.value = fileMap.get(name) || "";
@@ -341,19 +357,18 @@
       fileMap.clear();
       mainBasename = null;
       let mainText = null;
-      for (let i = 0; i < paths.length; i++) {
-        const path = paths[i];
+      for (const path of paths) {
         const res = await fetch(path);
         if (!res.ok) throw new Error(`Sample not reachable (HTTP ${res.status}): ${path}. Open the page via a local server.`);
         const text = await res.text();
         const basename = pathBasename(path);
         fileMap.set(basename, text);
-        if (i === 0) {
+        if (mainBasename === null && YAML_RE.test(basename)) {
           mainBasename = basename;
           mainText = text;
         }
       }
-      $input.value = mainText;
+      $input.value = mainText || "";
       renderFilesLoaded();
       run();
     } catch (err) {
@@ -367,6 +382,7 @@
     if (!text) {
       $ports.innerHTML = '<span class="ports-empty">Paste a compose file to analyze.</span>';
       $lint.innerHTML = '<span class="lint-empty">Analyze a compose file to see lint findings.</span>';
+      $dockerfiles.innerHTML = '<span class="dockerfiles-empty">Upload a Dockerfile alongside the compose to inspect it here.</span>';
       $lintSummary.textContent = "";
       $graph.innerHTML = "";
       return;
@@ -389,6 +405,7 @@
     window.DockerScope.renderGraph($graph, model, worstByService);
     renderLint($lint, $lintSummary, lint, model);
     renderPorts($ports, model);
+    renderDockerfiles($dockerfiles, model);
   }
 
   function renderLint(container, summaryEl, lint, model) {
@@ -463,6 +480,61 @@
       `;
     }).join("");
     container.innerHTML = html;
+  }
+
+  function renderDockerfiles(container, model) {
+    const withDf = model.services.filter(s => s.dockerfile && s.dockerfile.finalStage);
+    if (withDf.length === 0) {
+      container.classList.add("dockerfiles-empty");
+      container.innerHTML = '<span class="dockerfiles-empty">Upload a Dockerfile alongside the compose to inspect it here.</span>';
+      return;
+    }
+    container.classList.remove("dockerfiles-empty");
+    const html = withDf.map(svc => {
+      const df = svc.dockerfile;
+      const final = df.finalStage;
+      const rows = [];
+      rows.push(row("Base image",
+        `<code>${escapeHtml(final.from)}</code>` +
+        (final.name ? ` <span class="stage-tag">stage <code>${escapeHtml(final.name)}</code></span>` : "")
+      ));
+      if (df.multiStage) {
+        const chain = df.stages.map(s =>
+          `<code>${escapeHtml(s.from)}${s.name ? " AS " + escapeHtml(s.name) : ""}</code>`
+        ).join(' <span class="arrow">→</span> ');
+        rows.push(row("Stages", chain));
+      }
+      if (final.workdir) rows.push(row("WORKDIR", `<code>${escapeHtml(final.workdir)}</code>`));
+      if (final.user) rows.push(row("USER", `<code>${escapeHtml(final.user)}</code>`));
+      if (final.expose.length) {
+        rows.push(row("EXPOSE", final.expose.map(p => `<code>${escapeHtml(p)}</code>`).join(" ")));
+      }
+      if (final.env.length) {
+        rows.push(row("ENV", final.env.map(e =>
+          `<code>${escapeHtml(e.key)}=${escapeHtml(e.value == null ? "" : String(e.value))}</code>`
+        ).join(" ")));
+      }
+      if (final.entrypoint) rows.push(row("ENTRYPOINT", formatExecOrShell(final.entrypoint)));
+      if (final.cmd) rows.push(row("CMD", formatExecOrShell(final.cmd)));
+      const badge = df.multiStage ? ' <span class="badge">multi-stage</span>' : "";
+      return `
+        <div class="dockerfile-group">
+          <h3>${escapeHtml(svc.name)}${badge}</h3>
+          <dl>${rows.join("")}</dl>
+        </div>
+      `;
+    }).join("");
+    container.innerHTML = html;
+  }
+
+  function row(label, valueHtml) {
+    return `<dt>${escapeHtml(label)}</dt><dd>${valueHtml}</dd>`;
+  }
+
+  function formatExecOrShell(c) {
+    if (c.exec) return `<code>${escapeHtml(JSON.stringify(c.exec))}</code>`;
+    if (c.shell) return `<code>${escapeHtml(c.shell)}</code>`;
+    return "";
   }
 
   function formatPort(p) {

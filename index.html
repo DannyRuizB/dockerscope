@@ -27,13 +27,14 @@
               <button type="button" data-sample="basic">Basic (single file)</button>
               <button type="button" data-sample="extends">Extends (multi-file)</button>
               <button type="button" data-sample="include">Include (multi-file)</button>
+              <button type="button" data-sample="dockerfile">Dockerfile (build)</button>
             </div>
           </div>
           <button id="upload" type="button">Upload files</button>
           <button id="analyze" type="button" class="primary">Analyze</button>
         </div>
       </div>
-      <input id="file-input" type="file" accept=".yml,.yaml,application/yaml,text/yaml" hidden multiple />
+      <input id="file-input" type="file" accept=".yml,.yaml,.Dockerfile,application/yaml,text/yaml,text/plain" hidden multiple />
       <div id="files-loaded" class="files-loaded" hidden></div>
       <div class="textarea-wrap">
         <textarea
@@ -80,11 +81,16 @@
         <h2>Ports</h2>
       </div>
       <div id="ports" class="ports-empty">Analyze a compose file to see exposed ports.</div>
+
+      <div class="pane-header dockerfiles-header">
+        <h2>Dockerfiles</h2>
+      </div>
+      <div id="dockerfiles" class="dockerfiles-empty">Upload a Dockerfile alongside the compose to inspect it here.</div>
     </section>
   </main>
 
   <footer class="bottombar">
-    <span>v0.6.0</span>
+    <span>v0.7.0</span>
     <span>·</span>
     <span>MIT</span>
     <span>·</span>
@@ -97,6 +103,7 @@
   <script src="https://cdn.jsdelivr.net/npm/cose-base@2.2.0/cose-base.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/cytoscape-fcose@2.2.0/cytoscape-fcose.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/cytoscape-svg@0.4.0/cytoscape-svg.js"></script>
+  <script src="src/dockerfile.js"></script>
   <script src="src/parser.js"></script>
   <script src="src/linter.js"></script>
   <script src="src/graph.js"></script>

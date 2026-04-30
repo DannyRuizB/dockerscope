@@ -264,6 +264,17 @@ body {
   color: var(--accent);
 }
 
+.file-chip.dockerfile {
+  border-color: #a16207;
+  color: #fde68a;
+  cursor: default;
+}
+
+.file-chip.dockerfile:hover {
+  border-color: #d97706;
+  color: #fde68a;
+}
+
 .file-chip .x {
   color: var(--text-dim);
   font-size: 12px;
@@ -560,6 +571,78 @@ button.primary:hover {
   margin-left: 6px;
 }
 
+.dockerfiles-empty {
+  color: var(--text-dim);
+  font-style: italic;
+  font-family: var(--sans);
+}
+
+.dockerfile-group {
+  margin-bottom: 14px;
+}
+
+.dockerfile-group h3 {
+  margin: 0 0 8px 0;
+  font-size: 13px;
+  color: var(--accent);
+  font-family: var(--mono);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.dockerfile-group .badge {
+  font-family: var(--sans);
+  font-size: 10px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  padding: 2px 6px;
+  background: rgba(36, 150, 237, 0.12);
+  border: 1px solid var(--accent);
+  border-radius: 3px;
+  color: var(--accent);
+}
+
+.dockerfile-group dl {
+  margin: 0;
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 4px 12px;
+  font-size: 12px;
+}
+
+.dockerfile-group dt {
+  color: var(--text-dim);
+  font-family: var(--sans);
+  font-weight: 500;
+}
+
+.dockerfile-group dd {
+  margin: 0;
+  color: var(--text);
+}
+
+.dockerfile-group dd code {
+  font-family: var(--mono);
+  font-size: 12px;
+  background: var(--bg);
+  padding: 1px 5px;
+  border-radius: 3px;
+  margin-right: 4px;
+}
+
+.dockerfile-group dd .arrow {
+  color: var(--text-dim);
+  margin: 0 4px;
+}
+
+.dockerfile-group dd .stage-tag {
+  color: var(--text-dim);
+  font-size: 11px;
+  font-family: var(--sans);
+}
+
 .bottombar {
   padding: 10px 20px;
   border-top: 1px solid var(--border);
@@ -598,6 +681,8 @@ body.popout-graph .lint-header,
 body.popout-graph #lint,
 body.popout-graph .ports-header,
 body.popout-graph #ports,
+body.popout-graph .dockerfiles-header,
+body.popout-graph #dockerfiles,
 body.popout-graph #popout-graph {
   display: none !important;
 }

@@ -353,7 +353,6 @@ function graphStyle() {
         "color": "#94a3b8",
         "font-size": 9,
         "font-family": "JetBrains Mono, Courier New, monospace",
-        "text-rotation": "autorotate",
         "text-margin-y": -8,
         "text-background-color": "#0f172a",
         "text-background-opacity": 0.85,

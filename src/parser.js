@@ -74,6 +74,7 @@ window.DockerScope.parseCompose = function (yamlText, fileMap) {
       restart: typeof raw.restart === "string" ? raw.restart : null,
       healthcheck: raw.healthcheck && typeof raw.healthcheck === "object" ? raw.healthcheck : null,
       volumes: parseVolumes(raw.volumes, topVolumeSet, warnings, name),
+      dockerfile: resolveDockerfile(raw.build, fileMap, warnings, name),
     });
   }
 
@@ -320,6 +321,35 @@ function stripExtends(svc) {
 function pathBasename(p) {
   if (!p) return p;
   return String(p).split(/[\\/]/).pop();
+}
+
+// Resolves a service's `build:` directive against the fileMap. Supports:
+//   build: ./api                         → looks up "Dockerfile"
+//   build: { dockerfile: "x.Dockerfile" } → looks up "x.Dockerfile"
+//   build: { context: "./api" }          → looks up "Dockerfile"
+// Silent miss: if the Dockerfile basename isn't in fileMap, returns null
+// without warning. The build still works in real Docker; the panel just stays
+// empty for that service.
+function resolveDockerfile(build, fileMap, warnings, serviceName) {
+  if (!build) return null;
+  let basename = "Dockerfile";
+  if (typeof build === "object" && build.dockerfile) {
+    basename = pathBasename(String(build.dockerfile));
+  } else if (typeof build !== "string" && typeof build !== "object") {
+    return null;
+  }
+  const text = fileMap.get(basename);
+  if (!text) return null;
+  if (!window.DockerScope.parseDockerfile) {
+    warnings.push(`Service "${serviceName}": Dockerfile parser not loaded.`);
+    return null;
+  }
+  try {
+    return window.DockerScope.parseDockerfile(text);
+  } catch (err) {
+    warnings.push(`Service "${serviceName}": failed to parse Dockerfile "${basename}": ${err.message}`);
+    return null;
+  }
 }
 
 // Compose's merge convention for a service that extends another:

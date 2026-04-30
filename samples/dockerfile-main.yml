@@ -1,0 +1,34 @@
+# Demo: services that build from a Dockerfile.
+# Upload api.Dockerfile and worker.Dockerfile alongside this compose so
+# DockerScope can inspect their stages, EXPOSE, ENV, CMD and ENTRYPOINT.
+
+services:
+  api:
+    build:
+      context: ./api
+      dockerfile: api.Dockerfile
+    ports:
+      - "3000:3000"
+    depends_on:
+      - db
+
+  worker:
+    build:
+      context: ./worker
+      dockerfile: worker.Dockerfile
+    depends_on:
+      - db
+
+  db:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_PASSWORD: changeme
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "postgres"]
+      interval: 10s
+    volumes:
+      - db-data:/var/lib/postgresql/data
+
+volumes:
+  db-data:
