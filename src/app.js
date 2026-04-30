@@ -63,6 +63,18 @@
     }
   });
 
+  // Ctrl/Cmd+A outside any text field selects every node in the graph so the
+  // whole layout can be moved as a block.
+  document.addEventListener("keydown", (e) => {
+    if (!(e.ctrlKey || e.metaKey) || e.key.toLowerCase() !== "a") return;
+    const t = e.target;
+    if (t && (t.tagName === "TEXTAREA" || t.tagName === "INPUT" || t.isContentEditable)) return;
+    const cy = window.DockerScope.getCy();
+    if (!cy) return;
+    e.preventDefault();
+    cy.nodes().select();
+  });
+
   setupDragAndDrop();
 
   function toggleLint() {

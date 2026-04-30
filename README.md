@@ -18,6 +18,7 @@ DockerScope is a **client-side, zero-backend** tool that parses a `docker-compos
 - **Multi-file `extends`** — drop the main compose **and** the file it extends from at the same time, and DockerScope merges them client-side so the graph reflects the resolved services. File chips above the textarea let you switch which one is the "main".
 - **Multi-file `include`** — drop the main compose along with every file it pulls in via `include:`. DockerScope merges all of them into a single model: services, networks and volumes from the included files end up next to the ones declared in the main, with the main winning on name collisions.
 - **Dockerfile inspection** — drop the `Dockerfile` for any service that uses `build:` and a new "Dockerfiles" panel appears, showing base image, multi-stage chain, `EXPOSE`, `ENV`, `WORKDIR`, `USER`, `CMD` and `ENTRYPOINT` for each one.
+- **Layout that stays tidy** — drag a node and alignment guidelines appear as you cross another node's row or column, or hit equal spacing between peers. Select multiple nodes (`Ctrl+A`, or shift-drag a box) and they move together as a block.
 
 ![Multi-file extends in action: two file chips above the textarea (extends-main.yml marked as main, extends-base.yml loaded). The graph shows api, db and logger services with the properties resolved from the base file — api wrapped inside the app-net network it inherits from app-base, and the logger node attached to the ./fluent-bit.conf bind mount inherited from logger-base.](screenshots/screenshot-extends.png)
 
@@ -25,7 +26,7 @@ DockerScope is a **client-side, zero-backend** tool that parses a `docker-compos
 
 ![Dockerfile inspection in action: three file chips above the textarea (dockerfile-main.yml as main, plus api.Dockerfile and worker.Dockerfile rendered with amber borders to mark them as Dockerfiles). The graph shows api, db, worker and the db-data named volume; the mount edge label /var/lib/postgresql/data is drawn horizontally so it stays readable. A new "Dockerfiles" panel below Ports shows the api entry with a multi-stage badge, its base image, stage chain, WORKDIR, USER and EXPOSE.](screenshots/screenshot-dockerfiles.png)
 
-🚧 Work in progress — v0.7.0.
+🚧 Work in progress — v0.7.1.
 
 ---
 

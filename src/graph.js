@@ -9,6 +9,11 @@ if (typeof cytoscape !== "undefined" && typeof cytoscapeFcose !== "undefined" &&
   try { cytoscape.use(cytoscapeFcose); } catch (_) { /* already registered */ }
   window.__fcoseRegistered = true;
 }
+// grid-guide draws alignment lines while dragging a node.
+if (typeof cytoscape !== "undefined" && typeof cytoscapeGridGuide !== "undefined" && !window.__gridGuideRegistered) {
+  try { cytoscape.use(cytoscapeGridGuide); } catch (_) { /* already registered */ }
+  window.__gridGuideRegistered = true;
+}
 
 // Computes a node width proportional to its label, with a sensible minimum.
 // Replaces `"width": "label"` which is deprecated in Cytoscape 3.30+.
@@ -65,6 +70,64 @@ window.DockerScope.renderGraph = function (containerEl, model, lintByService) {
     if (cyInstance.zoom() > 1.5) cyInstance.zoom(1.5);
     cyInstance.center();
   });
+
+  // Alignment guidelines — appear while dragging a node, no snap to grid.
+  if (typeof cyInstance.gridGuide === "function") {
+    cyInstance.gridGuide({
+      snapToGridOnRelease: false,
+      snapToGridDuringDrag: false,
+      snapToAlignmentLocationOnRelease: false,
+      snapToAlignmentLocationDuringDrag: false,
+      distributionGuidelines: true,
+      geometricGuideline: true,
+      initPosAlignment: true,
+      centerToEdgeAlignment: true,
+      drawGrid: false,
+      resize: false,
+      parentPadding: false,
+      guidelinesStackOrder: 4,
+      guidelinesTolerance: 4,
+      guidelinesStyle: {
+        strokeStyle: "#3b82f6",
+        geometricGuidelineRange: 600,
+        range: 200,
+        minDistRange: 10,
+        distGuidelineOffset: 10,
+        horizontalDistColor: "#94a3b8",
+        verticalDistColor: "#94a3b8",
+        initPosAlignmentColor: "#a16207",
+        lineDash: [4, 3],
+        horizontalDistLine: [0, 0],
+        verticalDistLine: [0, 0],
+        initPosAlignmentLine: [2, 2],
+      },
+    });
+  }
+
+  // Move every currently-selected node together with the one being dragged.
+  // Cytoscape's default only moves the grabbed node, which makes "select all
+  // then drag" feel broken — so we capture the offset and apply it to peers.
+  let dragState = null;
+  cyInstance.on("grab", "node", (evt) => {
+    const grabbed = evt.target;
+    const peers = cyInstance.nodes(":selected").filter(n => n.id() !== grabbed.id());
+    if (peers.length === 0) { dragState = null; return; }
+    dragState = {
+      grabbedId: grabbed.id(),
+      origin: { x: grabbed.position("x"), y: grabbed.position("y") },
+      peers: peers.map(n => ({ node: n, start: { x: n.position("x"), y: n.position("y") } })),
+    };
+  });
+  cyInstance.on("drag", "node", (evt) => {
+    if (!dragState || evt.target.id() !== dragState.grabbedId) return;
+    const cur = evt.target.position();
+    const dx = cur.x - dragState.origin.x;
+    const dy = cur.y - dragState.origin.y;
+    for (const p of dragState.peers) {
+      p.node.position({ x: p.start.x + dx, y: p.start.y + dy });
+    }
+  });
+  cyInstance.on("free", "node", () => { dragState = null; });
 };
 
 function buildElements(model, lintByService) {
