@@ -64,6 +64,7 @@ window.DockerScope.parseCompose = function (yamlText, fileMap) {
       warnings.push(`Service "${name}" is empty or not an object.`);
       continue;
     }
+    const dockerfile = resolveDockerfile(raw.build, fileMap, warnings, name);
     services.push({
       name,
       image: raw.image || raw.build ? (raw.image || "(build)") : null,
@@ -74,7 +75,8 @@ window.DockerScope.parseCompose = function (yamlText, fileMap) {
       restart: typeof raw.restart === "string" ? raw.restart : null,
       healthcheck: raw.healthcheck && typeof raw.healthcheck === "object" ? raw.healthcheck : null,
       volumes: parseVolumes(raw.volumes, topVolumeSet, warnings, name),
-      dockerfile: resolveDockerfile(raw.build, fileMap, warnings, name),
+      dockerfile,
+      stack: resolveStack(name, dockerfile, fileMap, warnings),
     });
   }
 
@@ -321,6 +323,39 @@ function stripExtends(svc) {
 function pathBasename(p) {
   if (!p) return p;
   return String(p).split(/[\\/]/).pop();
+}
+
+// Resolves a service's stack from a language manifest file uploaded with the
+// service-prefixed name (e.g. `api.package.json`, `worker.requirements.txt`,
+// `svc.go.mod`). Silent miss: if no matching manifest is in fileMap, returns
+// null without warning. If a Dockerfile is also resolved, its FROM line is
+// used as a fallback for the language version when the manifest doesn't
+// carry one (package.json / requirements.txt don't; go.mod does).
+function resolveStack(serviceName, dockerfile, fileMap, warnings) {
+  if (!window.DockerScope.parseManifest) return null;
+  const candidates = [
+    `${serviceName}.package.json`,
+    `${serviceName}.requirements.txt`,
+    `${serviceName}.go.mod`,
+  ];
+  for (const filename of candidates) {
+    const text = fileMap.get(filename);
+    if (text == null) continue;
+    let result;
+    try {
+      result = window.DockerScope.parseManifest(filename, text);
+    } catch (err) {
+      warnings.push(`Service "${serviceName}": failed to parse manifest "${filename}": ${err.message}`);
+      continue;
+    }
+    if (!result) continue;
+    if (!result.languageVersion && dockerfile && window.DockerScope.languageVersionFromDockerfile) {
+      result.languageVersion = window.DockerScope.languageVersionFromDockerfile(dockerfile, result.language);
+    }
+    result.sourceFile = filename;
+    return result;
+  }
+  return null;
 }
 
 // Resolves a service's `build:` directive against the fileMap. Supports:

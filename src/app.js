@@ -7,10 +7,18 @@
     extends: ["samples/extends-main.yml", "samples/extends-base.yml"],
     include: ["samples/include-main.yml", "samples/include-services.yml", "samples/include-proxy.yml"],
     dockerfile: ["samples/dockerfile-main.yml", "samples/api.Dockerfile", "samples/worker.Dockerfile"],
+    stack: [
+      "samples/stack-main.yml",
+      "samples/api.Dockerfile",
+      "samples/api.package.json",
+      "samples/worker.Dockerfile",
+      "samples/worker.requirements.txt",
+    ],
   };
 
   const YAML_RE = /\.(ya?ml)$/i;
   const DOCKERFILE_RE = /(^|[\\/])Dockerfile($|[._-])|\.Dockerfile$/i;
+  const MANIFEST_RE = /(^|[\\/.])(package\.json|requirements\.txt|go\.mod)$/i;
 
   // fileMap holds every uploaded/loaded YAML by basename so the parser can
   // resolve `extends.file` references. The "main" YAML is whatever's currently
@@ -30,6 +38,7 @@
   const $graph = document.getElementById("graph");
   const $ports = document.getElementById("ports");
   const $dockerfiles = document.getElementById("dockerfiles");
+  const $stack = document.getElementById("stack");
   const $lint = document.getElementById("lint");
   const $lintSummary = document.getElementById("lint-summary");
   const $lintToggle = document.getElementById("lint-toggle");
@@ -225,8 +234,9 @@
     files.forEach((file, idx) => {
       const isYaml = YAML_RE.test(file.name) || /ya?ml/.test(file.type || "");
       const isDockerfile = DOCKERFILE_RE.test(file.name);
-      if (!isYaml && !isDockerfile) {
-        firstError = firstError || `"${file.name}" doesn't look like a YAML or Dockerfile. Loading anyway.`;
+      const isManifest = MANIFEST_RE.test(file.name);
+      if (!isYaml && !isDockerfile && !isManifest) {
+        firstError = firstError || `"${file.name}" isn't a recognised type (YAML, Dockerfile or manifest). Loading anyway.`;
       }
       const reader = new FileReader();
       reader.onload = () => {
@@ -257,10 +267,18 @@
     for (const name of fileMap.keys()) {
       const isMain = name === mainBasename;
       const isDockerfile = DOCKERFILE_RE.test(name);
-      const cls = ["file-chip", isMain ? "main" : "", isDockerfile ? "dockerfile" : ""].filter(Boolean).join(" ");
+      const isManifest = MANIFEST_RE.test(name);
+      const cls = [
+        "file-chip",
+        isMain ? "main" : "",
+        isDockerfile ? "dockerfile" : "",
+        isManifest ? "manifest" : "",
+      ].filter(Boolean).join(" ");
       const title = isDockerfile
         ? "Dockerfile (linked from a service's build directive)"
-        : (isMain ? "main file" : "click to make main");
+        : isManifest
+          ? "Language manifest (matched to a service by basename prefix)"
+          : (isMain ? "main file" : "click to make main");
       chips.push(`
         <span class="${cls}" data-name="${escapeHtml(name)}" title="${title}">
           ${escapeHtml(name)}${isMain ? " · main" : ""}
@@ -395,6 +413,7 @@
       $ports.innerHTML = '<span class="ports-empty">Paste a compose file to analyze.</span>';
       $lint.innerHTML = '<span class="lint-empty">Analyze a compose file to see lint findings.</span>';
       $dockerfiles.innerHTML = '<span class="dockerfiles-empty">Upload a Dockerfile alongside the compose to inspect it here.</span>';
+      $stack.innerHTML = '<span class="stack-empty">Upload a manifest prefixed with the service name to detect framework, DB clients and queue clients here.</span>';
       $lintSummary.textContent = "";
       $graph.innerHTML = "";
       return;
@@ -418,6 +437,7 @@
     renderLint($lint, $lintSummary, lint, model);
     renderPorts($ports, model);
     renderDockerfiles($dockerfiles, model);
+    renderStack($stack, model);
   }
 
   function renderLint(container, summaryEl, lint, model) {
@@ -541,6 +561,37 @@
 
   function row(label, valueHtml) {
     return `<dt>${escapeHtml(label)}</dt><dd>${valueHtml}</dd>`;
+  }
+
+  function renderStack(container, model) {
+    const withStack = model.services.filter(s => s.stack);
+    if (withStack.length === 0) {
+      container.classList.add("stack-empty");
+      container.innerHTML = '<span class="stack-empty">Upload a manifest prefixed with the service name (e.g. <code>api.package.json</code>) to detect framework, DB clients and queue clients here.</span>';
+      return;
+    }
+    container.classList.remove("stack-empty");
+    const html = withStack.map(svc => {
+      const s = svc.stack;
+      const lang = s.languageVersion ? `${s.language} ${s.languageVersion}` : s.language;
+      const rows = [];
+      rows.push(row("Language", `<code>${escapeHtml(lang)}</code>`));
+      if (s.framework) rows.push(row("Framework", `<code>${escapeHtml(s.framework)}</code>`));
+      if (s.dbClients.length) {
+        rows.push(row("DB clients", s.dbClients.map(c => `<code>${escapeHtml(c)}</code>`).join(" ")));
+      }
+      if (s.queueClients.length) {
+        rows.push(row("Queue clients", s.queueClients.map(c => `<code>${escapeHtml(c)}</code>`).join(" ")));
+      }
+      rows.push(row("From", `<span class="stage-tag">${escapeHtml(s.sourceFile)} · ${s.depCount} dep${s.depCount === 1 ? "" : "s"}</span>`));
+      return `
+        <div class="stack-group">
+          <h3>${escapeHtml(svc.name)}</h3>
+          <dl>${rows.join("")}</dl>
+        </div>
+      `;
+    }).join("");
+    container.innerHTML = html;
   }
 
   function formatExecOrShell(c) {

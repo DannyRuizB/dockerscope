@@ -1,0 +1,43 @@
+# Demo: stack detection. Each service that builds from a Dockerfile also
+# uploads its language manifest with the service-prefixed name
+# (api.package.json, worker.requirements.txt). DockerScope picks them up
+# by basename and surfaces framework, DB drivers and queue clients.
+
+services:
+  api:
+    build:
+      context: ./api
+      dockerfile: api.Dockerfile
+    ports:
+      - "3000:3000"
+    depends_on:
+      - db
+      - cache
+      - broker
+
+  worker:
+    build:
+      context: ./worker
+      dockerfile: worker.Dockerfile
+    depends_on:
+      - db
+      - broker
+
+  db:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_PASSWORD: changeme
+    volumes:
+      - db-data:/var/lib/postgresql/data
+
+  cache:
+    image: redis:7-alpine
+    restart: unless-stopped
+
+  broker:
+    image: rabbitmq:3-management
+    restart: unless-stopped
+
+volumes:
+  db-data:
