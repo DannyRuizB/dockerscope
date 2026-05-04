@@ -4,7 +4,7 @@
 
 ### [Try the live demo →](https://dannyruizb.github.io/dockerscope/)
 
-![DockerScope rendering the sample compose: frontend and backend networks drawn as dashed compound containers wrapping their services. Lint severity in the borders (db red, api/cache/worker amber, web clean). Three volume nodes are also visible — db-data as a gray cylinder under db, ./nginx-conf as an amber tag attached to web with a dashed edge labelled "/etc/nginx/conf.d (ro)", and /var/run/docker.sock as an amber tag attached to worker.](screenshots/screenshot.png)
+![DockerScope on the stack-detection sample: chips above the textarea show stack-main.yml as main alongside api.Dockerfile, api.package.json, worker.Dockerfile and worker.requirements.txt. The graph renders api, worker, db, cache, broker and the db-data named volume; lint severity is reflected in the borders (db red for plaintext POSTGRES_PASSWORD, api/worker amber for missing restart and healthcheck, cache and broker clean). Below the graph: Lint is collapsed, Dockerfiles shows the worker entry (python:3.12-slim, WORKDIR /app, ENTRYPOINT and CMD), and Stack shows api as Node 20 + Express + PostgreSQL (pg) + Redis (ioredis) + BullMQ + AMQP/RabbitMQ sourced from api.package.json, and worker as Python 3.12 + FastAPI + PostgreSQL (psycopg2-binary) + Celery + AMQP/RabbitMQ (pika) sourced from worker.requirements.txt.](screenshots/screenshot.png)
 
 DockerScope is a **client-side, zero-backend** tool that parses a `docker-compose.yml` file and renders:
 
@@ -29,7 +29,7 @@ DockerScope is a **client-side, zero-backend** tool that parses a `docker-compos
 
 ![Stack detection in action: chips above the textarea include green-bordered manifest files (api.package.json, worker.requirements.txt) alongside the YAML and Dockerfile chips. The graph shows api, worker and the supporting db, cache and broker services. A new "Stack" panel reads, for the api service, Node 20 + Express + PostgreSQL (pg) and Redis (ioredis) DB clients + BullMQ and AMQP/RabbitMQ queue clients sourced from api.package.json. The worker entry shows Python 3.12 + FastAPI + PostgreSQL (psycopg2-binary) + Celery and AMQP/RabbitMQ (pika) sourced from worker.requirements.txt.](screenshots/screenshot-stack.png)
 
-🚧 Work in progress — v0.8.0.
+**v1.0.0** — stable. The roadmap declared in this README is fully shipped.
 
 ---
 
@@ -53,6 +53,26 @@ python3 -m http.server 8080
 ```
 
 > Opening `index.html` directly with `file://` works for pasted input but blocks `Load sample` (browsers disallow `fetch` from `file://`). Use a static server.
+
+## File naming conventions
+
+DockerScope associates a `Dockerfile` or a language manifest to a service by **filename**. A few short rules:
+
+- **Compose**: any `.yml` / `.yaml` file. The first one becomes the "main"; switch which is main by clicking its chip.
+- **Dockerfile**: matched per service via `build.dockerfile`, or per the path given in `build`. To keep multiple Dockerfiles unambiguous, prefix them with the service name: `api.Dockerfile`, `worker.Dockerfile`. A bare `Dockerfile` works when there's only one service with `build:`.
+- **Language manifest**: prefix it with the service name — `api.package.json`, `worker.requirements.txt`, `svc.go.mod`. Bare manifests (no prefix) are intentionally **not** matched, to avoid ambiguity when a compose has more than one service.
+
+## Stack detection coverage (v0.8)
+
+DockerScope reads dependency keys from the manifest and surfaces framework, DB drivers and queue / broker clients. Adding a new entry is one line in `src/manifest.js`.
+
+| Language | Manifest | Frameworks | DB clients | Queue / broker |
+|----------|----------|------------|-----------|----------------|
+| Node | `package.json` | Next.js, NestJS, Express, Fastify, Koa, Hapi | pg, postgres, mysql2, mysql, mongodb, mongoose, Prisma, Sequelize, TypeORM, Knex, redis, ioredis, better-sqlite3, sqlite3 | BullMQ, Bull, amqplib, kafkajs, NATS, Agenda, Bee Queue |
+| Python | `requirements.txt` | Django, FastAPI, Flask, Starlette, aiohttp, Tornado | psycopg2 / psycopg2-binary / psycopg3, asyncpg, pymysql, mysqlclient, pymongo, motor, redis-py, SQLAlchemy, Peewee | Celery, pika, kafka-python, confluent-kafka, RQ, Dramatiq, NATS |
+| Go | `go.mod` | Gin, Echo, Fiber, Gorilla Mux, chi | pgx, lib/pq, go-sql-driver/mysql, mongo-driver, go-redis, GORM, mattn/go-sqlite3 | amqp091-go, streadway/amqp, segmentio/kafka-go, confluent-kafka-go, nats.go |
+
+Language version is read from `go.mod` directly; for Node and Python it's inferred from a `node:N` / `python:N` `FROM` line in the matching Dockerfile when present.
 
 ## Roadmap
 
