@@ -39,6 +39,15 @@ Reviewing a `docker-compose.yml` from a teammate, a tutorial, or a homelab proje
 
 It is intentionally **not** a wrapper around `docker compose config` — it runs entirely in the browser, so no Docker daemon, no upload, no server.
 
+## What this demonstrates
+
+A project built on container-orchestration knowledge. Skills on display:
+
+- **Container orchestration** — deep reading of `docker-compose.yml`: services, networks, named and bind volumes, published ports, `restart` policies and healthchecks.
+- **Docker security awareness** — a linter flagging plaintext secrets, databases exposed on `0.0.0.0`, risky bind mounts (e.g. `docker.sock`) and floating image tags.
+- **Image internals** — Dockerfile inspection (multi-stage chains, base image, `USER`, `EXPOSE`) and language / framework / stack detection from manifests.
+- **Frontend engineering** — client-side parsing and graph layout, multi-file `extends` / `include` merging, deployed on GitHub Pages.
+
 ## Use it
 
 Live demo: **https://dannyruizb.github.io/dockerscope/** — runs 100% in your browser, no upload, no server.
@@ -106,6 +115,10 @@ All loaded from CDN; no `npm install` required.
 | `port-public` | warn | a database / cache image (Postgres, MySQL, Mongo, Redis, Elastic, Kafka…) publishes a port on `0.0.0.0` instead of `127.0.0.1:` |
 | `no-restart` | warn | service has no `restart` policy |
 | `no-healthcheck` | warn | service has no `healthcheck` |
+
+## About
+
+Built by **[Danny Ruiz](https://github.com/DannyRuizB)** — systems & network administrator (ASIR, *Administración de Sistemas Informáticos en Red*). [More projects →](https://github.com/DannyRuizB?tab=repositories)
 
 ## License
 
