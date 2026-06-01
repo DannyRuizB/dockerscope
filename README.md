@@ -2,6 +2,8 @@
 
 > Visual analyzer for `docker-compose.yml` — paste a compose file, see the architecture.
 
+[![lint](https://github.com/DannyRuizB/dockerscope/actions/workflows/lint.yml/badge.svg)](https://github.com/DannyRuizB/dockerscope/actions/workflows/lint.yml)
+
 ### [Try the live demo →](https://dannyruizb.github.io/dockerscope/)
 
 ![DockerScope on the stack-detection sample: chips above the textarea show stack-main.yml as main alongside api.Dockerfile, api.package.json, worker.Dockerfile and worker.requirements.txt. The graph renders api, worker, db, cache, broker and the db-data named volume; lint severity is reflected in the borders (db red for plaintext POSTGRES_PASSWORD, api/worker amber for missing restart and healthcheck, cache and broker clean). Below the graph: Lint is collapsed, Dockerfiles shows the worker entry (python:3.12-slim, WORKDIR /app, ENTRYPOINT and CMD), and Stack shows api as Node 20 + Express + PostgreSQL (pg) + Redis (ioredis) + BullMQ + AMQP/RabbitMQ sourced from api.package.json, and worker as Python 3.12 + FastAPI + PostgreSQL (psycopg2-binary) + Celery + AMQP/RabbitMQ (pika) sourced from worker.requirements.txt.](screenshots/screenshot.png)
