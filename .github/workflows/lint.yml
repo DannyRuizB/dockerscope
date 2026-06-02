@@ -1,7 +1,8 @@
 name: lint
 
-# Syntax-checks every first-party JS file on each push and pull request
-# (the app is plain client-side scripts; CDN libraries are excluded).
+# Static analysis on every push and pull request: ESLint over the first-party
+# client-side scripts. CDN libraries are declared as globals, not bundled, so
+# they are not linted. No host or browser is needed — this only reads the code.
 on:
   push:
     branches: [main]
@@ -11,21 +12,20 @@ permissions:
   contents: read
 
 jobs:
-  syntax:
+  eslint:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v5
 
       - name: Set up Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
-          node-version: "20"
+          node-version: "22"
+          cache: npm
 
-      - name: JS syntax check
-        run: |
-          set -e
-          find src -name '*.js' -print0 | while IFS= read -r -d '' f; do
-            echo "checking $f"
-            node --check "$f"
-          done
+      - name: Install dependencies
+        run: npm ci
+
+      - name: ESLint
+        run: npm run lint

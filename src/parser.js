@@ -25,7 +25,7 @@ window.DockerScope.parseCompose = function (yamlText, fileMap) {
   try {
     doc = jsyaml.load(yamlText);
   } catch (err) {
-    throw new Error("YAML parse error: " + err.message);
+    throw new Error("YAML parse error: " + err.message, { cause: err });
   }
   if (!doc || typeof doc !== "object") {
     throw new Error("Empty or invalid compose file.");
@@ -203,7 +203,7 @@ function parseVolumes(value, topVolumeSet, warnings, serviceName) {
   return out;
 }
 
-function parseSingleVolume(entry, topVolumeSet) {
+function parseSingleVolume(entry, _topVolumeSet) {
   if (typeof entry === "string") {
     const parts = entry.split(":");
     if (parts.length === 1) {
@@ -263,7 +263,7 @@ function resolveServiceExtends(svc, name, sameDocServices, fileMap, warnings, de
     return stripExtends(svc);
   }
 
-  let baseSvc = null;
+  let baseSvc;
   if (typeof svc.extends === "string") {
     baseSvc = sameDocServices[svc.extends];
     if (!baseSvc) {

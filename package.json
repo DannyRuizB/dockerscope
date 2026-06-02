@@ -1,0 +1,24 @@
+{
+  "name": "dockerscope",
+  "version": "1.0.0",
+  "description": "Visual analyzer for docker-compose.yml — paste a compose file, see the architecture.",
+  "scripts": {
+    "lint": "eslint 'src/**/*.js'"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/DannyRuizB/dockerscope.git"
+  },
+  "author": "Danny Ruiz Boluda",
+  "license": "MIT",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/DannyRuizB/dockerscope/issues"
+  },
+  "homepage": "https://github.com/DannyRuizB/dockerscope#readme",
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "eslint": "^10.4.1",
+    "globals": "^17.6.0"
+  }
+}

@@ -110,7 +110,7 @@ function parseRequirementsTxt(text) {
     const stripped = raw.replace(/#.*$/, "").trim();
     if (!stripped) continue;
     if (stripped.startsWith("-")) continue; // -r, -e, --extra-index-url
-    const m = stripped.match(/^([A-Za-z0-9_.\-]+)/);
+    const m = stripped.match(/^([A-Za-z0-9_.-]+)/);
     if (m) names.add(m[1].toLowerCase());
   }
   if (names.size === 0) return null;
