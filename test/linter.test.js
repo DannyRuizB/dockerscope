@@ -35,6 +35,34 @@ test('env-secret is an error and worstLevelByService surfaces it', () => {
   assert.equal(worst.db, 'error');
 });
 
+test('port-public fires when a database image publishes to 0.0.0.0', () => {
+  const yaml = [
+    'services:',
+    '  db:',
+    '    image: postgres:16',
+    '    restart: unless-stopped',
+    '    healthcheck:',
+    '      test: ["CMD", "true"]',
+    '    ports: ["5432:5432"]',
+  ].join('\n');
+  const { findings } = DS.lint(DS.parseCompose(yaml));
+  assert.ok(findings.some((f) => f.service === 'db' && f.rule === 'port-public'));
+});
+
+test('port-public does NOT fire when the port is bound to 127.0.0.1', () => {
+  const yaml = [
+    'services:',
+    '  db:',
+    '    image: postgres:16',
+    '    restart: unless-stopped',
+    '    healthcheck:',
+    '      test: ["CMD", "true"]',
+    '    ports: ["127.0.0.1:5432:5432"]',
+  ].join('\n');
+  const { findings } = DS.lint(DS.parseCompose(yaml));
+  assert.ok(!findings.some((f) => f.rule === 'port-public'));
+});
+
 test('a fully-specified service produces no findings', () => {
   const yaml = [
     'services:',

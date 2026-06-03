@@ -20,3 +20,21 @@ test('parseManifest detects Python / FastAPI from a requirements.txt', () => {
   assert.equal(pm.framework, 'FastAPI');
   assert.ok([...pm.queueClients].some((c) => /Celery/.test(c)), 'detects Celery');
 });
+
+test('parseManifest detects Go / Gin and the go.mod version', () => {
+  const gomod = [
+    'module example.com/app',
+    '',
+    'go 1.22',
+    '',
+    'require (',
+    '\tgithub.com/gin-gonic/gin v1.9.1',
+    '\tgithub.com/jackc/pgx/v5 v5.5.0',
+    ')',
+  ].join('\n');
+  const pm = DS.parseManifest('go.mod', gomod);
+  assert.equal(pm.language, 'Go');
+  assert.equal(pm.languageVersion, '1.22');
+  assert.equal(pm.framework, 'Gin');
+  assert.ok([...pm.dbClients].some((c) => /pgx/.test(c)), 'detects the pgx Postgres driver');
+});
