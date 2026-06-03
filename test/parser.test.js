@@ -42,6 +42,44 @@ test('parseCompose attaches detected stack info from build manifests', () => {
   assert.equal(api.stack.framework, 'Express');
 });
 
+test('parseCompose normalizes object-form depends_on and networks to arrays', () => {
+  const yaml = [
+    'services:',
+    '  web:',
+    '    image: nginx:1',
+    '    depends_on:',
+    '      api:',
+    '        condition: service_healthy',
+    '    networks:',
+    '      frontend: {}',
+    'networks:',
+    '  frontend: {}',
+  ].join('\n');
+  const web = DS.parseCompose(yaml).services[0];
+  assert.deepEqual([...web.depends_on], ['api']);
+  assert.deepEqual([...web.networks], ['frontend']);
+});
+
+test('include: collisions resolve in favour of the including (main) file', () => {
+  const fileMap = new Map([
+    ['inc.yml', 'services:\n  api:\n    image: included:1\n  extra:\n    image: extra:1\n'],
+  ]);
+  const main = 'include:\n  - inc.yml\nservices:\n  api:\n    image: main:1\n';
+  const m = DS.parseCompose(main, fileMap);
+  assert.equal(m.services.find((s) => s.name === 'api').image, 'main:1');
+  assert.deepEqual([...m.services].map((s) => s.name).sort(), ['api', 'extra']);
+});
+
+test('extends concatenates array fields and lets the child override scalars', () => {
+  const fileMap = new Map([
+    ['base.yml', 'services:\n  b:\n    image: base:1\n    ports: ["9000:9000"]\n'],
+  ]);
+  const main = 'services:\n  web:\n    extends:\n      file: base.yml\n      service: b\n    image: web:1\n    ports: ["8080:80"]\n';
+  const web = DS.parseCompose(main, fileMap).services[0];
+  assert.equal(web.image, 'web:1'); // child scalar wins
+  assert.deepEqual([...web.ports].map((p) => p.published), [9000, 8080]); // arrays concat, base first
+});
+
 test('parseCompose throws a clear error on invalid YAML', () => {
   let err;
   try {
