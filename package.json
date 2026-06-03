@@ -3,7 +3,8 @@
   "version": "1.0.0",
   "description": "Visual analyzer for docker-compose.yml — paste a compose file, see the architecture.",
   "scripts": {
-    "lint": "eslint 'src/**/*.js'"
+    "lint": "eslint 'src/**/*.js' 'test/**/*.js'",
+    "test": "node --test test/*.test.js"
   },
   "repository": {
     "type": "git",
@@ -19,6 +20,7 @@
   "devDependencies": {
     "@eslint/js": "^10.0.1",
     "eslint": "^10.4.1",
-    "globals": "^17.6.0"
+    "globals": "^17.6.0",
+    "js-yaml": "^4.1.0"
   }
 }

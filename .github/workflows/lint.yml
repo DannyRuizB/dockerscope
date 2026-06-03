@@ -1,8 +1,9 @@
 name: lint
 
-# Static analysis on every push and pull request: ESLint over the first-party
-# client-side scripts. CDN libraries are declared as globals, not bundled, so
-# they are not linted. No host or browser is needed — this only reads the code.
+# Checks on every push and pull request: ESLint over the first-party client-side
+# scripts, then the node:test suite over the compose/Dockerfile/manifest/lint
+# logic. CDN libraries are declared as globals, not bundled, so they are not
+# linted. No host or browser is needed — this only reads and exercises the code.
 on:
   push:
     branches: [main]
@@ -29,3 +30,6 @@ jobs:
 
       - name: ESLint
         run: npm run lint
+
+      - name: Tests
+        run: npm test

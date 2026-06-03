@@ -106,7 +106,18 @@ Pure HTML + CSS + vanilla JS. No build step, no bundler, no backend.
 - [`Cytoscape.js`](https://js.cytoscape.org/) + [`cytoscape-fcose`](https://github.com/iVis-at-Bilkent/cytoscape.js-fcose) — graph rendering and force-directed layout with compound-node support (so networks can wrap their services).
 - [`cytoscape-svg`](https://github.com/kaluginserg/cytoscape-svg) — SVG export.
 
-All loaded from CDN; no `npm install` required.
+All loaded from CDN; no `npm install` required to run the app.
+
+## Tests
+
+The compose / Dockerfile / manifest parsers and the linter are covered by a [`node:test`](https://nodejs.org/api/test.html) suite. Each module hangs its API off `window`, so the tests load them into a Node `vm` sandbox whose global doubles as `window` (with the same `js-yaml` the page pulls from CDN), and assert against the fixtures in `samples/`: the service model, `include:` / `extends:` resolution, stack detection from build manifests, multi-stage Dockerfile parsing, and every lint rule.
+
+```bash
+npm install   # dev only: ESLint + js-yaml (running the app needs no install)
+npm test      # node --test over test/*.test.js
+```
+
+CI runs ESLint **and** this suite on every push and pull request.
 
 ## Lint rules (v0.2)
 
