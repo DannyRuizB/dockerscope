@@ -75,3 +75,52 @@ test('a fully-specified service produces no findings', () => {
   const { findings } = DS.lint(DS.parseCompose(yaml));
   assert.equal(findings.filter((f) => f.service === 'ok').length, 0);
 });
+
+test('docker-socket-mount is an error and notes read-only', () => {
+  const yaml = [
+    'services:',
+    '  proxy:',
+    '    image: traefik:3.1',
+    '    restart: unless-stopped',
+    '    healthcheck:',
+    '      test: ["CMD", "true"]',
+    '    volumes:',
+    '      - /var/run/docker.sock:/var/run/docker.sock:ro',
+  ].join('\n');
+  const { findings } = DS.lint(DS.parseCompose(yaml));
+  const f = findings.find((x) => x.rule === 'docker-socket-mount');
+  assert.ok(f && f.level === 'error', 'docker socket flagged as error');
+  assert.match(f.message, /read-only/);
+});
+
+test('privileged mode is flagged as an error', () => {
+  const yaml = ['services:', '  x:', '    image: alpine:3.20', '    privileged: true'].join('\n');
+  const { findings } = DS.lint(DS.parseCompose(yaml));
+  assert.ok(findings.some((f) => f.rule === 'privileged' && f.level === 'error'));
+});
+
+test('host namespaces (network_mode / pid / ipc: host) are flagged', () => {
+  const yaml = [
+    'services:',
+    '  x:',
+    '    image: alpine:3.20',
+    '    network_mode: host',
+    '    pid: host',
+  ].join('\n');
+  const rules = new Set(DS.lint(DS.parseCompose(yaml)).findings.map((f) => f.rule));
+  assert.ok(rules.has('host-namespace'));
+});
+
+test('dangerous capabilities are flagged (SYS_ADMIN as error, NET_ADMIN as warn)', () => {
+  const yaml = [
+    'services:',
+    '  x:',
+    '    image: alpine:3.20',
+    '    cap_add: ["SYS_ADMIN", "NET_ADMIN", "CHOWN"]',
+  ].join('\n');
+  const caps = DS.lint(DS.parseCompose(yaml)).findings.filter((f) => f.rule === 'dangerous-cap');
+  // SYS_ADMIN + NET_ADMIN flagged; the benign CHOWN is not.
+  assert.equal(caps.length, 2);
+  assert.ok(caps.some((f) => f.message.includes('SYS_ADMIN') && f.level === 'error'));
+  assert.ok(caps.some((f) => f.message.includes('NET_ADMIN') && f.level === 'warn'));
+});

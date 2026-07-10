@@ -7,6 +7,10 @@
 //     restart: string|null,
 //     healthcheck: object|null,
 //     volumes: [{type, source, target, readonly}],  // type: "named" | "bind" | "anonymous"
+//     privileged: boolean,
+//     capAdd: [string],               // upper-cased Linux capabilities from cap_add
+//     networkMode: string|null,       // e.g. "host"
+//     pidMode: string|null, ipcMode: string|null,  // e.g. "host"
 //   }],
 //   networks: [string],
 //   namedVolumes: [string],         // volumes used by services + declared at top level
@@ -75,6 +79,11 @@ window.DockerScope.parseCompose = function (yamlText, fileMap) {
       restart: typeof raw.restart === "string" ? raw.restart : null,
       healthcheck: raw.healthcheck && typeof raw.healthcheck === "object" ? raw.healthcheck : null,
       volumes: parseVolumes(raw.volumes, topVolumeSet, warnings, name),
+      privileged: raw.privileged === true,
+      capAdd: parseCapAdd(raw.cap_add),
+      networkMode: typeof raw.network_mode === "string" ? raw.network_mode : null,
+      pidMode: typeof raw.pid === "string" ? raw.pid : null,
+      ipcMode: typeof raw.ipc === "string" ? raw.ipc : null,
       dockerfile,
       stack: resolveStack(name, dockerfile, fileMap, warnings),
     });
@@ -106,6 +115,13 @@ function parseDependsOn(value) {
   if (Array.isArray(value)) return value.map(String);
   if (typeof value === "object") return Object.keys(value);
   return [];
+}
+
+// `cap_add` is a YAML list of Linux capability names. Normalise to an array of
+// upper-case strings (compose accepts them with or without the CAP_ prefix).
+function parseCapAdd(value) {
+  if (!Array.isArray(value)) return [];
+  return value.map(v => String(v).toUpperCase());
 }
 
 function parseServiceNetworks(value) {

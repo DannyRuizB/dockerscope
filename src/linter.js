@@ -96,12 +96,88 @@ function ruleNoHealthcheck(svc) {
   }];
 }
 
+// Mounting the Docker socket hands the container full control of the daemon —
+// which is root on the host. It's the single most dangerous line in a compose
+// file, so it's flagged even though it's occasionally intentional (Traefik,
+// Portainer): those should mount it read-only and be on a trusted network.
+function ruleDockerSocket(svc) {
+  const findings = [];
+  for (const v of svc.volumes) {
+    const src = String(v.source || "");
+    if (!/(^|\/)docker\.sock$/.test(src)) continue;
+    findings.push({
+      level: "error",
+      rule: "docker-socket-mount",
+      message: `mounts the Docker socket (\`${src}\`)${v.readonly ? " (read-only)" : ""}.`,
+      hint: "This grants full control of the host's Docker daemon (root-equivalent). Avoid it; if a tool truly needs it, mount `:ro` and use a socket proxy.",
+    });
+  }
+  return findings;
+}
+
+// `privileged: true` disables almost all of Docker's isolation (all caps, all
+// devices) — a container escape becomes trivial.
+function rulePrivileged(svc) {
+  if (!svc.privileged) return [];
+  return [{
+    level: "error",
+    rule: "privileged",
+    message: "runs in `privileged` mode.",
+    hint: "Drop `privileged` and grant only the specific `cap_add` / `devices` the service needs.",
+  }];
+}
+
+// Sharing the host's network / PID / IPC namespace removes the isolation that
+// makes a container a container.
+function ruleHostNamespace(svc) {
+  const findings = [];
+  const ns = [
+    ["network_mode", svc.networkMode],
+    ["pid", svc.pidMode],
+    ["ipc", svc.ipcMode],
+  ];
+  for (const [field, value] of ns) {
+    if (value !== "host") continue;
+    findings.push({
+      level: "warn",
+      rule: "host-namespace",
+      message: `uses \`${field}: host\` — shares the host's ${field === "network_mode" ? "network" : field} namespace.`,
+      hint: "Prefer the default isolated namespace; publish only the ports you need instead of sharing the host stack.",
+    });
+  }
+  return findings;
+}
+
+// Capabilities that, added back, largely defeat the point of dropping root.
+const DANGEROUS_CAPS = new Set([
+  "SYS_ADMIN", "NET_ADMIN", "SYS_PTRACE", "SYS_MODULE",
+  "SYS_RAWIO", "DAC_READ_SEARCH", "ALL",
+]);
+function ruleDangerousCaps(svc) {
+  const findings = [];
+  for (const cap of svc.capAdd) {
+    const name = cap.replace(/^CAP_/, "");
+    if (!DANGEROUS_CAPS.has(name)) continue;
+    findings.push({
+      level: name === "ALL" || name === "SYS_ADMIN" ? "error" : "warn",
+      rule: "dangerous-cap",
+      message: `adds the dangerous capability \`${cap}\`.`,
+      hint: "Grant the narrowest capability that works; `SYS_ADMIN` / `ALL` are close to `privileged`.",
+    });
+  }
+  return findings;
+}
+
 const RULES = [
   ruleImageLatest,
   ruleEnvSecrets,
   rulePortPublic,
   ruleNoRestart,
   ruleNoHealthcheck,
+  ruleDockerSocket,
+  rulePrivileged,
+  ruleHostNamespace,
+  ruleDangerousCaps,
 ];
 
 window.DockerScope.lint = function (model) {
