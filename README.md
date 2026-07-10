@@ -11,7 +11,7 @@
 DockerScope is a **client-side, zero-backend** tool that parses a `docker-compose.yml` file and renders:
 
 - A **cluster-style service graph** where each network is drawn as a dashed container that visually wraps the services running on it (its first declared network); extra-network membership becomes a dashed edge so nothing is lost.
-- A **lint panel** (collapsible) flagging floating tags, plaintext secrets, databases exposed on `0.0.0.0`, missing `restart` policy and missing healthchecks. Each finding ships with a hint on how to fix it, and affected services are highlighted on the graph.
+- A **lint panel** (collapsible) flagging floating tags, plaintext secrets, databases exposed on `0.0.0.0`, container-privilege risks (`docker.sock` mounts, `privileged`, host namespaces, dangerous `cap_add`), missing `restart` policy and missing healthchecks. Each finding ships with a hint on how to fix it, and affected services are highlighted on the graph.
 - A **port table** listing every published port grouped by service.
 - **Volumes on the graph** — named volumes appear as gray cylinders, host bind mounts as amber tags. Each mount edge is labelled with the path inside the container, with a dashed line for read-only mounts. Bind mounts are highlighted in amber because they're the most common way a container leaks host state (think `~/.ssh:ro` or `/var/run/docker.sock`).
 - **Paste, upload, or drag & drop** your compose file — everything runs in the browser.
@@ -95,6 +95,7 @@ Language version is read from `go.mod` directly; for Node and Python it's inferr
 - [x] **v0.6** — `include` resolution: pull whole composes into the main one. Each included file contributes its services, networks and volumes; the main wins on name collisions.
 - [x] **v0.7** — `Dockerfile` inspection: upload a Dockerfile alongside the compose and DockerScope surfaces base image, multi-stage chain, `EXPOSE`, `ENV`, `WORKDIR`, `USER`, `CMD` and `ENTRYPOINT` for the matching service.
 - [x] **v0.8** — Stack detection from `package.json` / `requirements.txt` / `go.mod` (matched to a service by basename prefix). Identifies framework, DB clients and queue/broker clients via dependency keywords.
+- [x] **v0.9** — Container-privilege lint rules: `docker-socket-mount` (error — bind-mounting `docker.sock` is root on the host), `privileged` (error), `dangerous-cap` (error/warn for high-risk `cap_add` like `SYS_ADMIN`), and `host-namespace` (warn — `network_mode`/`pid`/`ipc: host`). The parser now surfaces `privileged`, `capAdd`, `networkMode`, `pidMode`, `ipcMode`. New **Insecure (linter demo)** sample trips every rule at once.
 
 > **Out of scope, on purpose**: parsing the application source code (Express routes, SQL schemas, Python modules) is a different problem — that's a code analyzer, not a Docker analyzer. DockerScope stays focused on what Docker itself describes: services, images, networks, ports, volumes, and the build recipe.
 
@@ -119,15 +120,21 @@ npm test      # node --test over test/*.test.js
 
 CI runs ESLint **and** this suite on every push and pull request.
 
-## Lint rules (v0.2)
+## Lint rules
 
 | Rule | Level | Triggered when |
 |------|-------|----------------|
 | `image-latest` / `image-untagged` | warn | image tag is `latest` or absent (Docker silently pulls `latest`) |
 | `env-secret` | **error** | `environment` has a key matching `*PASSWORD*`, `*SECRET*`, `*TOKEN*`, `*KEY*` with a literal value (interpolations like `${VAR}` are fine) |
 | `port-public` | warn | a database / cache image (Postgres, MySQL, Mongo, Redis, Elastic, Kafka…) publishes a port on `0.0.0.0` instead of `127.0.0.1:` |
+| `docker-socket-mount` | **error** | a service bind-mounts `docker.sock` — full control of the host daemon (root-equivalent) |
+| `privileged` | **error** | service runs in `privileged` mode (all capabilities and devices) |
+| `dangerous-cap` | **error** / warn | `cap_add` grants a high-risk capability (`SYS_ADMIN` / `ALL` = error; `NET_ADMIN`, `SYS_PTRACE`, `SYS_MODULE`, `SYS_RAWIO`, `DAC_READ_SEARCH` = warn) |
+| `host-namespace` | warn | `network_mode: host`, `pid: host` or `ipc: host` — shares a host namespace |
 | `no-restart` | warn | service has no `restart` policy |
 | `no-healthcheck` | warn | service has no `healthcheck` |
+
+Try them all at once with the **Insecure (linter demo)** sample.
 
 ## About
 

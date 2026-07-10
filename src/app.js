@@ -4,6 +4,7 @@
 
   const SAMPLES = {
     basic: ["samples/example.yml"],                              // first one becomes main
+    insecure: ["samples/insecure.yml"],                          // trips the security rules
     extends: ["samples/extends-main.yml", "samples/extends-base.yml"],
     include: ["samples/include-main.yml", "samples/include-services.yml", "samples/include-proxy.yml"],
     dockerfile: ["samples/dockerfile-main.yml", "samples/api.Dockerfile", "samples/worker.Dockerfile"],
