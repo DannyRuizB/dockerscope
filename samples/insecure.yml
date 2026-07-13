@@ -15,9 +15,12 @@ services:
     privileged: true                 # privileged (error)
     network_mode: host               # host-namespace
     pid: host                        # host-namespace
-    cap_add:
+    cap_add:                         # no-new-privileges (warn) — caps without the security_opt
       - SYS_ADMIN                    # dangerous-cap (error)
       - NET_ADMIN                    # dangerous-cap (warn)
+    volumes:
+      - /etc:/host-etc               # sensitive-host-mount (error) — read-write host config
+      - /proc:/host-proc:ro          # sensitive-host-mount (warn) — read-only kernel surface
 
   # Database published to the world with a hardcoded password.
   db:

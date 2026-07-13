@@ -11,6 +11,7 @@
 //     capAdd: [string],               // upper-cased Linux capabilities from cap_add
 //     networkMode: string|null,       // e.g. "host"
 //     pidMode: string|null, ipcMode: string|null,  // e.g. "host"
+//     securityOpt: [string],          // raw security_opt entries, e.g. "no-new-privileges:true"
 //   }],
 //   networks: [string],
 //   namedVolumes: [string],         // volumes used by services + declared at top level
@@ -84,6 +85,7 @@ window.DockerScope.parseCompose = function (yamlText, fileMap) {
       networkMode: typeof raw.network_mode === "string" ? raw.network_mode : null,
       pidMode: typeof raw.pid === "string" ? raw.pid : null,
       ipcMode: typeof raw.ipc === "string" ? raw.ipc : null,
+      securityOpt: Array.isArray(raw.security_opt) ? raw.security_opt.map(String) : [],
       dockerfile,
       stack: resolveStack(name, dockerfile, fileMap, warnings),
     });

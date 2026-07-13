@@ -168,6 +168,59 @@ function ruleDangerousCaps(svc) {
   return findings;
 }
 
+// Host paths that hand the container the keys to the machine when bind-mounted:
+// credentials (/etc, /root, /home), kernel surfaces (/proc, /sys, /dev), the
+// boot chain (/boot) and Docker's own state (/var/lib/docker — every other
+// container's filesystem). "/" is all of the above at once.
+const SENSITIVE_MOUNT_ROOTS = [
+  "/", "/etc", "/root", "/home", "/boot", "/proc", "/sys", "/dev",
+  "/usr", "/bin", "/sbin", "/lib", "/var/lib/docker",
+];
+
+function sensitiveMountRoot(source) {
+  // Normalise: strip a trailing slash so "/etc/" matches "/etc".
+  const src = source.length > 1 ? source.replace(/\/+$/, "") : source;
+  for (const root of SENSITIVE_MOUNT_ROOTS) {
+    if (src === root) return root;
+    if (root !== "/" && src.startsWith(root + "/")) return root;
+  }
+  return null;
+}
+
+function ruleSensitiveHostMount(svc) {
+  const findings = [];
+  for (const v of svc.volumes) {
+    if (v.type !== "bind" || !v.source) continue;
+    if (/(^|\/)docker\.sock$/.test(v.source)) continue; // its own rule, worse than a path
+    const root = sensitiveMountRoot(v.source);
+    if (!root) continue;
+    findings.push({
+      level: v.readonly ? "warn" : "error",
+      rule: "sensitive-host-mount",
+      message: `bind-mounts the sensitive host path \`${v.source}\`${v.readonly ? " (read-only)" : " read-write"}.`,
+      hint: v.readonly
+        ? `Even read-only, \`${root}\` exposes host secrets/config to the container. Mount the narrowest file or directory the service actually needs.`
+        : `A writable mount under \`${root}\` lets the container tamper with the host. Mount \`:ro\`, and only the narrowest path the service actually needs.`,
+    });
+  }
+  return findings;
+}
+
+// Added capabilities survive across setuid/sudo binaries unless the kernel is
+// told not to elevate: `no-new-privileges` closes that escalation path and is
+// close to free for services that don't rely on setuid.
+const NO_NEW_PRIVS_PATTERN = /^no-new-privileges(:true|=true)?$/;
+function ruleNoNewPrivileges(svc) {
+  if (svc.capAdd.length === 0) return [];
+  if (svc.securityOpt.some((o) => NO_NEW_PRIVS_PATTERN.test(String(o).trim()))) return [];
+  return [{
+    level: "warn",
+    rule: "no-new-privileges",
+    message: "adds capabilities via `cap_add` without `no-new-privileges`.",
+    hint: "Add `security_opt: [\"no-new-privileges:true\"]` so setuid binaries inside the container can't escalate beyond the granted capabilities.",
+  }];
+}
+
 const RULES = [
   ruleImageLatest,
   ruleEnvSecrets,
@@ -178,6 +231,8 @@ const RULES = [
   rulePrivileged,
   ruleHostNamespace,
   ruleDangerousCaps,
+  ruleSensitiveHostMount,
+  ruleNoNewPrivileges,
 ];
 
 window.DockerScope.lint = function (model) {
