@@ -124,3 +124,74 @@ test('dangerous capabilities are flagged (SYS_ADMIN as error, NET_ADMIN as warn)
   assert.ok(caps.some((f) => f.message.includes('SYS_ADMIN') && f.level === 'error'));
   assert.ok(caps.some((f) => f.message.includes('NET_ADMIN') && f.level === 'warn'));
 });
+
+test('sensitive-host-mount: rw is error, ro is warn, benign paths pass', () => {
+  const yaml = [
+    'services:',
+    '  x:',
+    '    image: alpine:3.20',
+    '    volumes:',
+    '      - /etc:/host-etc',
+    '      - /proc:/host-proc:ro',
+    '      - /opt/app/data:/data',
+    '      - namedvol:/var/lib/app',
+    'volumes:',
+    '  namedvol:',
+  ].join('\n');
+  const found = DS.lint(DS.parseCompose(yaml)).findings.filter((f) => f.rule === 'sensitive-host-mount');
+  assert.equal(found.length, 2);
+  assert.ok(found.some((f) => f.message.includes('/etc') && f.level === 'error'));
+  assert.ok(found.some((f) => f.message.includes('/proc') && f.level === 'warn'));
+});
+
+test('sensitive-host-mount catches subpaths and bare / but not docker.sock', () => {
+  const yaml = [
+    'services:',
+    '  x:',
+    '    image: alpine:3.20',
+    '    volumes:',
+    '      - /:/host',
+    '      - /var/lib/docker/volumes:/dv',
+    '      - /var/run/docker.sock:/var/run/docker.sock',
+  ].join('\n');
+  const found = DS.lint(DS.parseCompose(yaml)).findings.filter((f) => f.rule === 'sensitive-host-mount');
+  assert.equal(found.length, 2); // "/" + /var/lib/docker subpath; the socket has its own rule
+  assert.ok(found.every((f) => f.level === 'error'));
+});
+
+test('no-new-privileges warns on cap_add without the security_opt', () => {
+  const yaml = [
+    'services:',
+    '  x:',
+    '    image: alpine:3.20',
+    '    cap_add: ["NET_BIND_SERVICE"]',
+  ].join('\n');
+  const { findings } = DS.lint(DS.parseCompose(yaml));
+  assert.ok(findings.some((f) => f.rule === 'no-new-privileges' && f.level === 'warn'));
+});
+
+test('no-new-privileges stays quiet when the option is set (or nothing is added)', () => {
+  const yaml = [
+    'services:',
+    '  a:',
+    '    image: alpine:3.20',
+    '    cap_add: ["NET_BIND_SERVICE"]',
+    '    security_opt:',
+    '      - no-new-privileges:true',
+    '  b:',
+    '    image: alpine:3.20',
+  ].join('\n');
+  const { findings } = DS.lint(DS.parseCompose(yaml));
+  assert.ok(!findings.some((f) => f.rule === 'no-new-privileges'));
+});
+
+test('the insecure sample trips every security rule at once', () => {
+  const rules = new Set(DS.lint(DS.parseCompose(sample('insecure.yml'))).findings.map((f) => f.rule));
+  for (const r of [
+    'image-latest', 'docker-socket-mount', 'privileged', 'host-namespace',
+    'dangerous-cap', 'sensitive-host-mount', 'no-new-privileges',
+    'env-secret', 'port-public',
+  ]) {
+    assert.ok(rules.has(r), `expected rule '${r}'`);
+  }
+});
