@@ -97,6 +97,7 @@ Language version is read from `go.mod` directly; for Node and Python it's inferr
 - [x] **v0.8** — Stack detection from `package.json` / `requirements.txt` / `go.mod` (matched to a service by basename prefix). Identifies framework, DB clients and queue/broker clients via dependency keywords.
 - [x] **v0.9** — Container-privilege lint rules: `docker-socket-mount` (error — bind-mounting `docker.sock` is root on the host), `privileged` (error), `dangerous-cap` (error/warn for high-risk `cap_add` like `SYS_ADMIN`), and `host-namespace` (warn — `network_mode`/`pid`/`ipc: host`). The parser now surfaces `privileged`, `capAdd`, `networkMode`, `pidMode`, `ipcMode`. New **Insecure (linter demo)** sample trips every rule at once.
 - [x] **v0.10** — Host-mount and escalation lint rules: `sensitive-host-mount` (error when a sensitive host path — `/`, `/etc`, `/root`, `/home`, `/boot`, `/proc`, `/sys`, `/dev`, `/usr`, `/bin`, `/sbin`, `/lib`, `/var/lib/docker` or any subpath — is bind-mounted read-write; warn when `:ro`; `docker.sock` keeps its dedicated rule) and `no-new-privileges` (warn when a service uses `cap_add` without `security_opt: no-new-privileges` — setuid binaries inside the container could otherwise escalate past the granted capabilities). The parser now surfaces `securityOpt`. The **Insecure (linter demo)** sample trips both, and a regression test pins that it trips every security rule at once.
+- [x] **v0.11** — Profile and build-time lint rules: `security-unconfined` (error — `security_opt` with `seccomp:unconfined` / `apparmor:unconfined` switches off the syscall filter / MAC confinement that most container-escape chains assume is disabled; custom profiles stay unflagged) and `build-arg-secret` (error — a secret-looking key with a literal value in `build.args` is baked into the image history, where `docker history` shows it to anyone who can pull the image; BuildKit secret mounts are the fix). The parser now surfaces `buildArgs`, normalized like `environment` (both the mapping and the `KEY=value` list form). The **Insecure (linter demo)** sample trips both.
 
 > **Out of scope, on purpose**: parsing the application source code (Express routes, SQL schemas, Python modules) is a different problem — that's a code analyzer, not a Docker analyzer. DockerScope stays focused on what Docker itself describes: services, images, networks, ports, volumes, and the build recipe.
 
@@ -132,6 +133,10 @@ CI runs ESLint **and** this suite on every push and pull request.
 | `privileged` | **error** | service runs in `privileged` mode (all capabilities and devices) |
 | `dangerous-cap` | **error** / warn | `cap_add` grants a high-risk capability (`SYS_ADMIN` / `ALL` = error; `NET_ADMIN`, `SYS_PTRACE`, `SYS_MODULE`, `SYS_RAWIO`, `DAC_READ_SEARCH` = warn) |
 | `host-namespace` | warn | `network_mode: host`, `pid: host` or `ipc: host` — shares a host namespace |
+| `sensitive-host-mount` | **error** / warn | a sensitive host path (`/`, `/etc`, `/root`, `/proc`, `/var/lib/docker`…) is bind-mounted — error read-write, warn `:ro` |
+| `no-new-privileges` | warn | `cap_add` grants capabilities without `security_opt: no-new-privileges` — setuid binaries could escalate past them |
+| `security-unconfined` | **error** | `security_opt` disables seccomp or AppArmor (`seccomp:unconfined` / `apparmor:unconfined`) — most container escapes assume exactly this |
+| `build-arg-secret` | **error** | `build.args` has a key matching `*PASSWORD*`, `*SECRET*`, `*TOKEN*`, `*KEY*` with a literal value — build args are baked into the image history (`docker history` shows them) |
 | `no-restart` | warn | service has no `restart` policy |
 | `no-healthcheck` | warn | service has no `healthcheck` |
 

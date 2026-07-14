@@ -185,12 +185,62 @@ test('no-new-privileges stays quiet when the option is set (or nothing is added)
   assert.ok(!findings.some((f) => f.rule === 'no-new-privileges'));
 });
 
+test('security-unconfined flags seccomp/apparmor unconfined but not custom profiles', () => {
+  const yaml = [
+    'services:',
+    '  x:',
+    '    image: alpine:3.20',
+    '    security_opt:',
+    '      - seccomp:unconfined',
+    '      - apparmor=unconfined',
+    '  y:',
+    '    image: alpine:3.20',
+    '    security_opt:',
+    '      - seccomp:./custom-profile.json',
+    '      - no-new-privileges:true',
+  ].join('\n');
+  const found = DS.lint(DS.parseCompose(yaml)).findings.filter((f) => f.rule === 'security-unconfined');
+  // Both the `:` and `=` spellings are caught; the custom profile is not.
+  assert.equal(found.length, 2);
+  assert.ok(found.every((f) => f.service === 'x' && f.level === 'error'));
+});
+
+test('build-arg-secret flags a literal secret but not interpolations or benign args', () => {
+  const yaml = [
+    'services:',
+    '  app:',
+    '    build:',
+    '      context: .',
+    '      args:',
+    '        API_TOKEN: sk-live-123456',
+    '        DB_PASSWORD: ${DB_PASSWORD}',
+    '        NODE_VERSION: "24"',
+  ].join('\n');
+  const found = DS.lint(DS.parseCompose(yaml)).findings.filter((f) => f.rule === 'build-arg-secret');
+  // Only the literal API_TOKEN; the interpolation and the benign arg pass.
+  assert.equal(found.length, 1);
+  assert.ok(found[0].message.includes('API_TOKEN') && found[0].level === 'error');
+});
+
+test('build-arg-secret handles the list form of build.args', () => {
+  const yaml = [
+    'services:',
+    '  app:',
+    '    build:',
+    '      context: .',
+    '      args:',
+    '        - SECRET_KEY=hunter2',
+  ].join('\n');
+  const { findings } = DS.lint(DS.parseCompose(yaml));
+  assert.ok(findings.some((f) => f.rule === 'build-arg-secret'));
+});
+
 test('the insecure sample trips every security rule at once', () => {
   const rules = new Set(DS.lint(DS.parseCompose(sample('insecure.yml'))).findings.map((f) => f.rule));
   for (const r of [
     'image-latest', 'docker-socket-mount', 'privileged', 'host-namespace',
     'dangerous-cap', 'sensitive-host-mount', 'no-new-privileges',
-    'env-secret', 'port-public',
+    'env-secret', 'port-public', 'security-unconfined', 'build-arg-secret',
   ]) {
     assert.ok(rules.has(r), `expected rule '${r}'`);
   }
