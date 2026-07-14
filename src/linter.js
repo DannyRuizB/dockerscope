@@ -221,6 +221,47 @@ function ruleNoNewPrivileges(svc) {
   }];
 }
 
+// The default seccomp profile blocks ~44 dangerous syscalls and AppArmor
+// confines file / capability access; `unconfined` switches those protections
+// off wholesale. Almost every container-escape exploit chain assumes at least
+// one of them is disabled — legitimate needs are served by a *custom* profile,
+// not by none.
+const UNCONFINED_PATTERN = /^(seccomp|apparmor)[:=]unconfined$/;
+function ruleSecurityUnconfined(svc) {
+  const findings = [];
+  for (const opt of svc.securityOpt) {
+    const m = String(opt).trim().match(UNCONFINED_PATTERN);
+    if (!m) continue;
+    findings.push({
+      level: "error",
+      rule: "security-unconfined",
+      message: `disables the ${m[1]} profile (\`${String(opt).trim()}\`).`,
+      hint: `Most container escapes assume ${m[1]} is off. If the default profile blocks a syscall the service needs, ship a custom profile that allows just that one instead of \`unconfined\`.`,
+    });
+  }
+  return findings;
+}
+
+// Build args are baked into the image: `docker history` prints them to anyone
+// who can pull it, and they persist in the layer metadata forever. A secret
+// passed this way outlives the build — worse than `environment`, which at
+// least stays out of the image itself.
+function ruleBuildArgSecret(svc) {
+  const findings = [];
+  for (const { key, value } of svc.buildArgs) {
+    if (!SECRET_KEY_PATTERN.test(key)) continue;
+    if (value == null) continue; // pass-through — value lives in the host env
+    if (INTERPOLATION_PATTERN.test(value)) continue; // ${VAR} — still hits the image history at build time, but the file itself leaks nothing
+    findings.push({
+      level: "error",
+      rule: "build-arg-secret",
+      message: `build arg \`${key}\` carries a literal secret — build args are baked into the image history.`,
+      hint: "`docker history <image>` shows build args to anyone who can pull the image. Use a BuildKit secret mount (`RUN --mount=type=secret,...`) instead.",
+    });
+  }
+  return findings;
+}
+
 const RULES = [
   ruleImageLatest,
   ruleEnvSecrets,
@@ -233,6 +274,8 @@ const RULES = [
   ruleDangerousCaps,
   ruleSensitiveHostMount,
   ruleNoNewPrivileges,
+  ruleSecurityUnconfined,
+  ruleBuildArgSecret,
 ];
 
 window.DockerScope.lint = function (model) {

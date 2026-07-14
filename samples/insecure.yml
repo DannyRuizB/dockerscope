@@ -18,6 +18,8 @@ services:
     cap_add:                         # no-new-privileges (warn) — caps without the security_opt
       - SYS_ADMIN                    # dangerous-cap (error)
       - NET_ADMIN                    # dangerous-cap (warn)
+    security_opt:
+      - seccomp:unconfined           # security-unconfined (error) — syscall filter off
     volumes:
       - /etc:/host-etc               # sensitive-host-mount (error) — read-write host config
       - /proc:/host-proc:ro          # sensitive-host-mount (warn) — read-only kernel surface
@@ -29,3 +31,11 @@ services:
       POSTGRES_PASSWORD: hunter2     # env-secret (error)
     ports:
       - "5432:5432"                  # port-public (warn) — on 0.0.0.0
+
+  # Locally-built app that receives a secret as a build arg — `docker history`
+  # shows it to anyone who can pull the resulting image.
+  app:
+    build:
+      context: .
+      args:
+        API_TOKEN: sk-live-123456    # build-arg-secret (error)

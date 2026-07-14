@@ -12,6 +12,7 @@
 //     networkMode: string|null,       // e.g. "host"
 //     pidMode: string|null, ipcMode: string|null,  // e.g. "host"
 //     securityOpt: [string],          // raw security_opt entries, e.g. "no-new-privileges:true"
+//     buildArgs: [{key, value}],      // build.args normalized like environment
 //   }],
 //   networks: [string],
 //   namedVolumes: [string],         // volumes used by services + declared at top level
@@ -86,6 +87,11 @@ window.DockerScope.parseCompose = function (yamlText, fileMap) {
       pidMode: typeof raw.pid === "string" ? raw.pid : null,
       ipcMode: typeof raw.ipc === "string" ? raw.ipc : null,
       securityOpt: Array.isArray(raw.security_opt) ? raw.security_opt.map(String) : [],
+      // build.args accepts the same two shapes as environment (list of
+      // "KEY=value" strings, or a mapping) — reuse the same normalizer.
+      buildArgs: parseEnvironment(
+        raw.build && typeof raw.build === "object" ? raw.build.args : null
+      ),
       dockerfile,
       stack: resolveStack(name, dockerfile, fileMap, warnings),
     });
