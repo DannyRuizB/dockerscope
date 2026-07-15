@@ -333,6 +333,25 @@ function ruleDuplicateContainerName(svc, model) {
   return [];
 }
 
+// depends_on must name services that exist in the same file: Compose refuses
+// the whole file otherwise ("service ... depends on undefined service").
+// Classic ways to hit it: a rename that missed the depends_on line, or a
+// service moved to another compose file.
+function ruleDependsOnUnknown(svc, model) {
+  const known = new Set(model.services.map((s) => s.name));
+  const findings = [];
+  for (const dep of svc.depends_on) {
+    if (known.has(dep)) continue;
+    findings.push({
+      level: "error",
+      rule: "depends-on-unknown",
+      message: `\`depends_on\` references \`${dep}\`, which is not a service in this file — Compose refuses the whole file.`,
+      hint: "Fix the name (did a rename miss this line?) or remove the entry if the service moved elsewhere.",
+    });
+  }
+  return findings;
+}
+
 const RULES = [
   ruleImageLatest,
   ruleEnvSecrets,
@@ -349,6 +368,7 @@ const RULES = [
   ruleBuildArgSecret,
   rulePortConflict,
   ruleDuplicateContainerName,
+  ruleDependsOnUnknown,
 ];
 
 window.DockerScope.lint = function (model) {

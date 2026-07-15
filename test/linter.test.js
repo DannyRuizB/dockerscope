@@ -334,13 +334,44 @@ test('duplicate-container-name stays quiet without explicit names', () => {
   assert.ok(!findings.some((f) => f.rule === 'duplicate-container-name'));
 });
 
+test('depends-on-unknown fires on a ghost service, quiet on real ones (both forms)', () => {
+  const listForm = [
+    'services:',
+    '  api:',
+    '    image: node:22',
+    '    depends_on:',
+    '      - db',
+    '      - cache',
+    '  db:',
+    '    image: postgres:16',
+  ].join('\n');
+  const { findings } = DS.lint(DS.parseCompose(listForm));
+  const unknown = findings.filter((f) => f.rule === 'depends-on-unknown');
+  assert.equal(unknown.length, 1, 'only the ghost is flagged');
+  assert.equal(unknown[0].level, 'error');
+  assert.match(unknown[0].message, /cache/);
+
+  // Mapping form (condition: service_healthy) resolves names the same way.
+  const mapForm = [
+    'services:',
+    '  api:',
+    '    image: node:22',
+    '    depends_on:',
+    '      db:',
+    '        condition: service_healthy',
+    '  db:',
+    '    image: postgres:16',
+  ].join('\n');
+  assert.ok(!DS.lint(DS.parseCompose(mapForm)).findings.some((f) => f.rule === 'depends-on-unknown'));
+});
+
 test('the insecure sample trips every security rule at once', () => {
   const rules = new Set(DS.lint(DS.parseCompose(sample('insecure.yml'))).findings.map((f) => f.rule));
   for (const r of [
     'image-latest', 'docker-socket-mount', 'privileged', 'host-namespace',
     'dangerous-cap', 'sensitive-host-mount', 'no-new-privileges',
     'env-secret', 'port-public', 'security-unconfined', 'build-arg-secret',
-    'port-conflict', 'duplicate-container-name',
+    'port-conflict', 'duplicate-container-name', 'depends-on-unknown',
   ]) {
     assert.ok(rules.has(r), `expected rule '${r}'`);
   }
