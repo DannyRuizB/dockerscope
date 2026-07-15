@@ -310,6 +310,29 @@ function rulePortConflict(svc, model) {
   return findings;
 }
 
+// Explicit container_name values must be unique on the whole Docker host:
+// two services claiming the same one can't both start ("Conflict. The
+// container name ... is already in use"). Docker Compose since v2.24 refuses
+// the file outright. Same reported-once convention as port-conflict: only
+// the later service is flagged. As a bonus, container_name also disables
+// `--scale` for that service, but that's a docs concern, not a lint error.
+function ruleDuplicateContainerName(svc, model) {
+  if (!svc.containerName) return [];
+  const idx = model.services.indexOf(svc);
+  for (let s = 0; s < idx; s++) {
+    const other = model.services[s];
+    if (other.containerName === svc.containerName) {
+      return [{
+        level: "error",
+        rule: "duplicate-container-name",
+        message: `\`container_name: ${svc.containerName}\` is already taken by service \`${other.name}\` — the second container to start fails with "name is already in use".`,
+        hint: "Container names are host-global. Drop `container_name` (Compose generates unique names) or make them distinct.",
+      }];
+    }
+  }
+  return [];
+}
+
 const RULES = [
   ruleImageLatest,
   ruleEnvSecrets,
@@ -325,6 +348,7 @@ const RULES = [
   ruleSecurityUnconfined,
   ruleBuildArgSecret,
   rulePortConflict,
+  ruleDuplicateContainerName,
 ];
 
 window.DockerScope.lint = function (model) {

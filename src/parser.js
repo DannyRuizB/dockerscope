@@ -79,6 +79,7 @@ window.DockerScope.parseCompose = function (yamlText, fileMap) {
       ports: parsePorts(raw.ports, warnings, name),
       environment: parseEnvironment(raw.environment),
       restart: typeof raw.restart === "string" ? raw.restart : null,
+      containerName: typeof raw.container_name === "string" ? raw.container_name : null,
       healthcheck: raw.healthcheck && typeof raw.healthcheck === "object" ? raw.healthcheck : null,
       volumes: parseVolumes(raw.volumes, topVolumeSet, warnings, name),
       privileged: raw.privileged === true,

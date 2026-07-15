@@ -301,13 +301,46 @@ test('port-conflict flags a port published twice by the same service', () => {
   assert.match(conflicts[0].message, /twice/);
 });
 
+test('duplicate-container-name fires once, on the second claimant', () => {
+  const yaml = [
+    'services:',
+    '  a:',
+    '    image: nginx:1.27',
+    '    container_name: web',
+    '  b:',
+    '    image: nginx:1.27',
+    '    container_name: web',
+    '  c:',
+    '    image: nginx:1.27',
+    '    container_name: other',
+  ].join('\n');
+  const { findings } = DS.lint(DS.parseCompose(yaml));
+  const dups = findings.filter((f) => f.rule === 'duplicate-container-name');
+  assert.equal(dups.length, 1, 'one finding, not one per side');
+  assert.equal(dups[0].service, 'b');
+  assert.equal(dups[0].level, 'error');
+  assert.match(dups[0].message, /a/);
+});
+
+test('duplicate-container-name stays quiet without explicit names', () => {
+  const yaml = [
+    'services:',
+    '  a:',
+    '    image: nginx:1.27',
+    '  b:',
+    '    image: nginx:1.27',
+  ].join('\n');
+  const { findings } = DS.lint(DS.parseCompose(yaml));
+  assert.ok(!findings.some((f) => f.rule === 'duplicate-container-name'));
+});
+
 test('the insecure sample trips every security rule at once', () => {
   const rules = new Set(DS.lint(DS.parseCompose(sample('insecure.yml'))).findings.map((f) => f.rule));
   for (const r of [
     'image-latest', 'docker-socket-mount', 'privileged', 'host-namespace',
     'dangerous-cap', 'sensitive-host-mount', 'no-new-privileges',
     'env-secret', 'port-public', 'security-unconfined', 'build-arg-secret',
-    'port-conflict',
+    'port-conflict', 'duplicate-container-name',
   ]) {
     assert.ok(rules.has(r), `expected rule '${r}'`);
   }
