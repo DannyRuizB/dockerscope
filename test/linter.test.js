@@ -235,12 +235,79 @@ test('build-arg-secret handles the list form of build.args', () => {
   assert.ok(findings.some((f) => f.rule === 'build-arg-secret'));
 });
 
+test('port-conflict fires once, on the second service claiming the host port', () => {
+  const yaml = [
+    'services:',
+    '  web:',
+    '    image: nginx:1.27',
+    '    ports: ["8080:80"]',
+    '  admin:',
+    '    image: nginx:1.27',
+    '    ports: ["8080:81"]',
+  ].join('\n');
+  const { findings } = DS.lint(DS.parseCompose(yaml));
+  const conflicts = findings.filter((f) => f.rule === 'port-conflict');
+  assert.equal(conflicts.length, 1, 'one finding, not one per side');
+  assert.equal(conflicts[0].service, 'admin');
+  assert.equal(conflicts[0].level, 'error');
+  assert.match(conflicts[0].message, /web/);
+});
+
+test('port-conflict understands 0.0.0.0 as colliding with a specific host IP', () => {
+  const yaml = [
+    'services:',
+    '  a:',
+    '    image: nginx:1.27',
+    '    ports: ["127.0.0.1:5432:5432"]',
+    '  b:',
+    '    image: nginx:1.27',
+    '    ports: ["5432:5432"]',
+  ].join('\n');
+  const { findings } = DS.lint(DS.parseCompose(yaml));
+  assert.ok(findings.some((f) => f.rule === 'port-conflict' && f.service === 'b'));
+});
+
+test('port-conflict stays quiet on different ports, protocols, or host IPs', () => {
+  const yaml = [
+    'services:',
+    '  a:',
+    '    image: nginx:1.27',
+    '    ports:',
+    '      - "127.0.0.1:6000:6000"',
+    '      - "53:53/tcp"',
+    '  b:',
+    '    image: nginx:1.27',
+    '    ports:',
+    '      - "127.0.0.2:6000:6000"',
+    '      - "53:53/udp"',
+    '      - "8080:80"',
+  ].join('\n');
+  const { findings } = DS.lint(DS.parseCompose(yaml));
+  assert.ok(!findings.some((f) => f.rule === 'port-conflict'));
+});
+
+test('port-conflict flags a port published twice by the same service', () => {
+  const yaml = [
+    'services:',
+    '  a:',
+    '    image: nginx:1.27',
+    '    ports:',
+    '      - "8080:80"',
+    '      - "8080:81"',
+  ].join('\n');
+  const { findings } = DS.lint(DS.parseCompose(yaml));
+  const conflicts = findings.filter((f) => f.rule === 'port-conflict');
+  assert.equal(conflicts.length, 1);
+  assert.match(conflicts[0].message, /twice/);
+});
+
 test('the insecure sample trips every security rule at once', () => {
   const rules = new Set(DS.lint(DS.parseCompose(sample('insecure.yml'))).findings.map((f) => f.rule));
   for (const r of [
     'image-latest', 'docker-socket-mount', 'privileged', 'host-namespace',
     'dangerous-cap', 'sensitive-host-mount', 'no-new-privileges',
     'env-secret', 'port-public', 'security-unconfined', 'build-arg-secret',
+    'port-conflict',
   ]) {
     assert.ok(rules.has(r), `expected rule '${r}'`);
   }
