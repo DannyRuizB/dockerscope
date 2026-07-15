@@ -171,8 +171,13 @@ function buildElements(model, lintByService) {
   }
 
   // 3. depends_on edges
+  const knownServices = new Set(model.services.map((s) => s.name));
   for (const svc of model.services) {
     for (const dep of svc.depends_on) {
+      // A dangling depends_on (the linter flags it as depends-on-unknown)
+      // must not take the graph down with it: Cytoscape throws on edges
+      // whose target node doesn't exist.
+      if (!knownServices.has(dep)) continue;
       elements.push({
         data: {
           id: `dep:${svc.name}->${dep}`,

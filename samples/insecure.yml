@@ -37,6 +37,9 @@ services:
   # Locally-built app that receives a secret as a build arg — `docker history`
   # shows it to anyone who can pull the resulting image.
   app:
+    depends_on:
+      - db
+      - cache                        # depends-on-unknown (error) — no such service here
     build:
       context: .
       args:
