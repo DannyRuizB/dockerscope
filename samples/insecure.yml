@@ -39,3 +39,5 @@ services:
       context: .
       args:
         API_TOKEN: sk-live-123456    # build-arg-secret (error)
+    ports:
+      - "80:8080"                    # port-conflict (error) — proxy already claims host port 80

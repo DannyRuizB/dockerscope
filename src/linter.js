@@ -262,6 +262,54 @@ function ruleBuildArgSecret(svc) {
   return findings;
 }
 
+// Two containers can't bind the same host port: `docker compose up` starts the
+// first and the second dies with "port is already allocated". A binding with no
+// host_ip (or 0.0.0.0) claims the port on every interface, so it also collides
+// with any interface-specific binding of the same port/protocol. Only plain
+// numeric published ports are compared — ranges and interpolations are skipped.
+function bindingsCollide(a, b) {
+  if (a.published !== b.published) return false;
+  if ((a.protocol || "tcp") !== (b.protocol || "tcp")) return false;
+  const ipA = a.host_ip || "0.0.0.0";
+  const ipB = b.host_ip || "0.0.0.0";
+  return ipA === "0.0.0.0" || ipB === "0.0.0.0" || ipA === ipB;
+}
+
+function bindingLabel(p) {
+  return `${p.host_ip ? p.host_ip + ":" : ""}${p.published}/${p.protocol || "tcp"}`;
+}
+
+function rulePortConflict(svc, model) {
+  const findings = [];
+  const idx = model.services.indexOf(svc);
+  for (let i = 0; i < svc.ports.length; i++) {
+    const p = svc.ports[i];
+    if (typeof p.published !== "number") continue;
+    let clash = null;
+    // Only look backwards (earlier services, or earlier entries of this one),
+    // so each conflict is reported once — on its second occurrence.
+    for (let s = 0; s <= idx && !clash; s++) {
+      const other = model.services[s];
+      const upTo = other === svc ? i : other.ports.length;
+      for (let j = 0; j < upTo; j++) {
+        const q = other.ports[j];
+        if (typeof q.published !== "number") continue;
+        if (bindingsCollide(p, q)) { clash = other.name; break; }
+      }
+    }
+    if (clash == null) continue;
+    findings.push({
+      level: "error",
+      rule: "port-conflict",
+      message: clash === svc.name
+        ? `host port \`${bindingLabel(p)}\` is published twice by this service.`
+        : `host port \`${bindingLabel(p)}\` is already published by service \`${clash}\` — the second container to start will fail with "port is already allocated".`,
+      hint: "Change one of the `published` ports, or bind the services to different host IPs (e.g. `127.0.0.1:5432:5432`).",
+    });
+  }
+  return findings;
+}
+
 const RULES = [
   ruleImageLatest,
   ruleEnvSecrets,
@@ -276,6 +324,7 @@ const RULES = [
   ruleNoNewPrivileges,
   ruleSecurityUnconfined,
   ruleBuildArgSecret,
+  rulePortConflict,
 ];
 
 window.DockerScope.lint = function (model) {
