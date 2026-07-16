@@ -352,6 +352,48 @@ function ruleDependsOnUnknown(svc, model) {
   return findings;
 }
 
+// A service can only attach to networks declared in the top-level `networks:`
+// block: Compose refuses the whole file otherwise ("service ... refers to
+// undefined network"). The implicit `default` network is exempt — every file
+// has it without declaring it. Interpolated names are skipped (the value
+// comes from outside the file, nothing to resolve statically).
+function ruleUndeclaredNetwork(svc, model) {
+  const declared = new Set(model.declaredNetworks || []);
+  const findings = [];
+  for (const net of svc.networks) {
+    if (net === "default" || declared.has(net)) continue;
+    if (String(net).includes("${")) continue;
+    findings.push({
+      level: "error",
+      rule: "undeclared-network",
+      message: `attaches to network \`${net}\`, which is not declared in the top-level \`networks:\` block — Compose refuses the whole file.`,
+      hint: `Declare it (\`networks: { ${net}: {} }\` — add \`external: true\` if it already exists on the host) or fix the name.`,
+    });
+  }
+  return findings;
+}
+
+// Same contract for named volumes: a service mounting a named volume that the
+// top-level `volumes:` block doesn't declare is an undefined reference and
+// Compose rejects the file. Bind mounts and anonymous volumes have no name to
+// resolve, so only `type: "named"` entries are checked.
+function ruleUndeclaredVolume(svc, model) {
+  const declared = new Set(model.declaredVolumes || []);
+  const findings = [];
+  for (const v of svc.volumes) {
+    if (v.type !== "named" || !v.source) continue;
+    if (declared.has(v.source)) continue;
+    if (String(v.source).includes("${")) continue;
+    findings.push({
+      level: "error",
+      rule: "undeclared-volume",
+      message: `mounts named volume \`${v.source}\`, which is not declared in the top-level \`volumes:\` block — Compose refuses the whole file.`,
+      hint: `Declare it (\`volumes: { ${v.source}: {} }\` — add \`external: true\` if it already exists) or fix the name.`,
+    });
+  }
+  return findings;
+}
+
 const RULES = [
   ruleImageLatest,
   ruleEnvSecrets,
@@ -369,6 +411,8 @@ const RULES = [
   rulePortConflict,
   ruleDuplicateContainerName,
   ruleDependsOnUnknown,
+  ruleUndeclaredNetwork,
+  ruleUndeclaredVolume,
 ];
 
 window.DockerScope.lint = function (model) {
