@@ -33,6 +33,10 @@ services:
       POSTGRES_PASSWORD: hunter2     # env-secret (error)
     ports:
       - "5432:5432"                  # port-public (warn) — on 0.0.0.0
+    networks:
+      - backend                      # undeclared-network (error) — no top-level networks block
+    volumes:
+      - pgdata:/var/lib/postgresql/data   # undeclared-volume (error) — no top-level volumes block
 
   # Locally-built app that receives a secret as a build arg — `docker history`
   # shows it to anyone who can pull the resulting image.

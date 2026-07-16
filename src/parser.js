@@ -116,7 +116,16 @@ window.DockerScope.parseCompose = function (yamlText, fileMap) {
   }
   const allNamedVolumes = Array.from(new Set([...topVolumes, ...usedNamed]));
 
-  return { services, networks: allNetworks, namedVolumes: allNamedVolumes, warnings };
+  return {
+    services,
+    networks: allNetworks,
+    namedVolumes: allNamedVolumes,
+    // The declared-only sets (no implicit additions) — the linter needs the
+    // distinction to flag references Compose would reject as undefined.
+    declaredNetworks: topNetworks,
+    declaredVolumes: topVolumes,
+    warnings,
+  };
 };
 
 function parseDependsOn(value) {

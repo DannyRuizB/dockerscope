@@ -372,7 +372,56 @@ test('the insecure sample trips every security rule at once', () => {
     'dangerous-cap', 'sensitive-host-mount', 'no-new-privileges',
     'env-secret', 'port-public', 'security-unconfined', 'build-arg-secret',
     'port-conflict', 'duplicate-container-name', 'depends-on-unknown',
+    'undeclared-network', 'undeclared-volume',
   ]) {
     assert.ok(rules.has(r), `expected rule '${r}'`);
   }
+});
+
+test('undeclared-network flags a missing top-level network, spares default and declared ones', () => {
+  const flagged = [
+    'services:',
+    '  web:',
+    '    image: nginx:1.27',
+    '    networks:',
+    '      - frontend',
+    '      - default',
+  ].join('\n');
+  const found = DS.lint(DS.parseCompose(flagged)).findings.filter((f) => f.rule === 'undeclared-network');
+  assert.equal(found.length, 1);
+  assert.equal(found[0].level, 'error');
+  assert.match(found[0].message, /frontend/);
+
+  const declared = flagged + '\nnetworks:\n  frontend:\n';
+  assert.ok(!DS.lint(DS.parseCompose(declared)).findings.some((f) => f.rule === 'undeclared-network'));
+});
+
+test('undeclared-volume flags a missing named volume, ignores binds and anonymous volumes', () => {
+  const flagged = [
+    'services:',
+    '  db:',
+    '    image: postgres:16',
+    '    volumes:',
+    '      - pgdata:/var/lib/postgresql/data',
+    '      - ./conf:/etc/postgresql:ro',
+    '      - /var/cache/scratch',
+  ].join('\n');
+  const found = DS.lint(DS.parseCompose(flagged)).findings.filter((f) => f.rule === 'undeclared-volume');
+  assert.equal(found.length, 1);
+  assert.equal(found[0].level, 'error');
+  assert.match(found[0].message, /pgdata/);
+
+  const declared = flagged + '\nvolumes:\n  pgdata:\n';
+  assert.ok(!DS.lint(DS.parseCompose(declared)).findings.some((f) => f.rule === 'undeclared-volume'));
+});
+
+test('undeclared refs with interpolated names are skipped (value comes from outside)', () => {
+  const rs = [
+    'services:',
+    '  web:',
+    '    image: nginx:1.27',
+    '    networks:',
+    '      - ${NET_NAME}',
+  ].join('\n');
+  assert.ok(!DS.lint(DS.parseCompose(rs)).findings.some((f) => f.rule === 'undeclared-network'));
 });
