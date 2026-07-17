@@ -60,6 +60,32 @@ test('parseCompose normalizes object-form depends_on and networks to arrays', ()
   assert.deepEqual([...web.networks], ['frontend']);
 });
 
+test('parseCompose keeps the long-form depends_on condition, null for the short form', () => {
+  const yaml = [
+    'services:',
+    '  web:',
+    '    image: nginx:1',
+    '    depends_on:',
+    '      api:',
+    '        condition: service_healthy',
+    '      queue: {}',
+    '  worker:',
+    '    image: node:22',
+    '    depends_on:',
+    '      - api',
+    '  api:',
+    '    image: node:22',
+    '  queue:',
+    '    image: redis:7',
+  ].join('\n');
+  const { services } = DS.parseCompose(yaml);
+  const web = services.find((s) => s.name === 'web');
+  const worker = services.find((s) => s.name === 'worker');
+  assert.equal(web.dependsOnConditions.api, 'service_healthy');
+  assert.equal(web.dependsOnConditions.queue, null, 'empty long-form entry → no condition');
+  assert.equal(worker.dependsOnConditions.api, null, 'short form → no condition');
+});
+
 test('include: collisions resolve in favour of the including (main) file', () => {
   const fileMap = new Map([
     ['inc.yml', 'services:\n  api:\n    image: included:1\n  extra:\n    image: extra:1\n'],

@@ -352,6 +352,32 @@ function ruleDependsOnUnknown(svc, model) {
   return findings;
 }
 
+// The short form of depends_on only waits for the dependency's container to
+// START. If that dependency defines a healthcheck, the natural intent is to
+// wait until it PASSES — otherwise the app races the database's warmup and
+// wins just often enough to hide the bug until a slow morning. Fires only
+// when the target actually has a healthcheck (nothing to wait for otherwise);
+// `service_healthy` is the fix and `service_completed_successfully` is a
+// deliberate different contract (one-shot jobs wait for exit, not health),
+// so both stay quiet.
+function ruleDependsOnIgnoresHealthcheck(svc, model) {
+  const byName = new Map(model.services.map((s) => [s.name, s]));
+  const findings = [];
+  for (const dep of svc.depends_on) {
+    const target = byName.get(dep);
+    if (!target || !target.healthcheck) continue;
+    const cond = (svc.dependsOnConditions || {})[dep] || null;
+    if (cond === "service_healthy" || cond === "service_completed_successfully") continue;
+    findings.push({
+      level: "warn",
+      rule: "depends-on-ignores-healthcheck",
+      message: `\`depends_on: ${dep}\` only waits for the container to start, but \`${dep}\` defines a healthcheck.`,
+      hint: `Use the long form — \`depends_on: { ${dep}: { condition: service_healthy } }\` — to wait until the healthcheck passes.`,
+    });
+  }
+  return findings;
+}
+
 // A service can only attach to networks declared in the top-level `networks:`
 // block: Compose refuses the whole file otherwise ("service ... refers to
 // undefined network"). The implicit `default` network is exempt — every file
@@ -411,6 +437,7 @@ const RULES = [
   rulePortConflict,
   ruleDuplicateContainerName,
   ruleDependsOnUnknown,
+  ruleDependsOnIgnoresHealthcheck,
   ruleUndeclaredNetwork,
   ruleUndeclaredVolume,
 ];
