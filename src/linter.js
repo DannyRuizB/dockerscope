@@ -352,6 +352,63 @@ function ruleDependsOnUnknown(svc, model) {
   return findings;
 }
 
+// Secrets pasted into command / entrypoint are the third door after
+// environment (env-secret) and build args (build-arg-secret): a
+// `redis-server --requirepass hunter2` shows up in `docker inspect`,
+// `docker compose config`, `ps` inside the container, and the repo diff.
+// Two shapes are scanned: secret-looking flags (--password=x, --requirepass x,
+// --api-token x) and inline env assignments (MYSQL_PASSWORD=x cmd). Values
+// that are interpolations (${VAR} / $VAR) come from outside the file and are
+// fine; values that look like file paths (/run/secrets/db, ./certs/key.pem)
+// are references to a secret, not the secret itself — both are skipped.
+const CMD_SECRET_FLAG = /^--?[A-Za-z0-9-]*(password|passwd|secret|token|api-?key|requirepass|access-?key)$/i;
+const CMD_SECRET_FLAG_EQ = /^(--?[A-Za-z0-9-]*(?:password|passwd|secret|token|api-?key|requirepass|access-?key))=(.+)$/i;
+
+function isSafeCmdValue(v) {
+  return v.startsWith("$") || v.startsWith("/") || v.startsWith("./") || v.startsWith("-");
+}
+
+function scanCommandString(str, where, findings) {
+  // Strip shell quoting per token: `sh -c "KEY=x cmd"` keeps the inner
+  // string's quotes attached to the first/last tokens.
+  const tokens = String(str).split(/\s+/)
+    .map((t) => t.replace(/^["']+|["']+$/g, ""))
+    .filter(Boolean);
+  for (let i = 0; i < tokens.length; i++) {
+    const t = tokens[i];
+    const eq = t.match(CMD_SECRET_FLAG_EQ);
+    if (eq && !isSafeCmdValue(eq[2] ?? "")) {
+      findings.push(cmdSecretFinding(where, eq[1]));
+      continue;
+    }
+    const envM = t.match(/^([A-Za-z_][A-Za-z0-9_]*)=(.+)$/);
+    if (envM && SECRET_KEY_PATTERN.test(envM[1]) && !isSafeCmdValue(envM[2])) {
+      findings.push(cmdSecretFinding(where, envM[1]));
+      continue;
+    }
+    if (CMD_SECRET_FLAG.test(t) && i + 1 < tokens.length && !isSafeCmdValue(tokens[i + 1])) {
+      findings.push(cmdSecretFinding(where, t));
+      i++; // the value is consumed as this flag's argument
+    }
+  }
+}
+
+function cmdSecretFinding(where, what) {
+  return {
+    level: "error",
+    rule: "command-secret",
+    message: `\`${where}\` passes a literal secret via \`${what}\` — visible in \`docker inspect\`, \`docker compose config\` and \`ps\` inside the container.`,
+    hint: "Read it from a file (`/run/secrets/…`, Docker secrets) or interpolate from the environment (`${VAR}`) — never inline the value.",
+  };
+}
+
+function ruleCommandSecret(svc) {
+  const findings = [];
+  if (svc.command) scanCommandString(svc.command, "command", findings);
+  if (svc.entrypoint) scanCommandString(svc.entrypoint, "entrypoint", findings);
+  return findings;
+}
+
 // The short form of depends_on only waits for the dependency's container to
 // START. If that dependency defines a healthcheck, the natural intent is to
 // wait until it PASSES — otherwise the app races the database's warmup and
@@ -434,6 +491,7 @@ const RULES = [
   ruleNoNewPrivileges,
   ruleSecurityUnconfined,
   ruleBuildArgSecret,
+  ruleCommandSecret,
   rulePortConflict,
   ruleDuplicateContainerName,
   ruleDependsOnUnknown,

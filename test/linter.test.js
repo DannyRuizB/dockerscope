@@ -334,6 +334,49 @@ test('duplicate-container-name stays quiet without explicit names', () => {
   assert.ok(!findings.some((f) => f.rule === 'duplicate-container-name'));
 });
 
+test('command-secret catches literal secrets in command and entrypoint (all three shapes)', () => {
+  const yaml = [
+    'services:',
+    '  cache:',
+    '    image: redis:7',
+    '    command: redis-server --requirepass hunter2',        // flag + space
+    '  db-tool:',
+    '    image: mysql:8',
+    '    command: sh -c "MYSQL_PASSWORD=hunter2 mysqladmin ping"',  // inline env assignment
+    '  api:',
+    '    image: myorg/api:1',
+    '    entrypoint: ["./serve", "--api-token=sk-live-123"]',  // exec form, flag=value
+  ].join('\n');
+  const { findings } = DS.lint(DS.parseCompose(yaml));
+  const hits = findings.filter((f) => f.rule === 'command-secret');
+  assert.equal(hits.length, 3);
+  for (const h of hits) assert.equal(h.level, 'error');
+  assert.ok(hits.some((h) => h.message.includes('--requirepass')));
+  assert.ok(hits.some((h) => h.message.includes('MYSQL_PASSWORD')));
+  assert.ok(hits.some((h) => h.message.includes('--api-token')));
+  // The secret VALUE itself is never echoed back in the finding.
+  for (const h of hits) {
+    assert.ok(!h.message.includes('hunter2') && !h.message.includes('sk-live-123'));
+  }
+});
+
+test('command-secret spares interpolations, file paths and flag-like next tokens', () => {
+  const yaml = [
+    'services:',
+    '  a:',
+    '    image: redis:7',
+    '    command: redis-server --requirepass ${REDIS_PASS}',   // interpolation
+    '  b:',
+    '    image: mongo:7',
+    '    command: mongod --tlsCertificateKeyFile /certs/key.pem',  // path = reference, not secret
+    '  c:',
+    '    image: myorg/api:1',
+    '    command: ./serve --token --verbose',                  // next token is another flag
+  ].join('\n');
+  const { findings } = DS.lint(DS.parseCompose(yaml));
+  assert.ok(!findings.some((f) => f.rule === 'command-secret'));
+});
+
 test('depends-on-unknown fires on a ghost service, quiet on real ones (both forms)', () => {
   const listForm = [
     'services:',
@@ -433,7 +476,7 @@ test('the insecure sample trips every security rule at once', () => {
   for (const r of [
     'image-latest', 'docker-socket-mount', 'privileged', 'host-namespace',
     'dangerous-cap', 'sensitive-host-mount', 'no-new-privileges',
-    'env-secret', 'port-public', 'security-unconfined', 'build-arg-secret',
+    'env-secret', 'port-public', 'security-unconfined', 'build-arg-secret', 'command-secret',
     'port-conflict', 'duplicate-container-name', 'depends-on-unknown',
     'depends-on-ignores-healthcheck', 'undeclared-network', 'undeclared-volume',
   ]) {
