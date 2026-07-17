@@ -29,6 +29,9 @@ services:
   # Database published to the world with a hardcoded password.
   db:
     image: postgres:16
+    healthcheck:                     # defined… but see app's depends_on below
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
     environment:
       POSTGRES_PASSWORD: hunter2     # env-secret (error)
     ports:
@@ -42,7 +45,7 @@ services:
   # shows it to anyone who can pull the resulting image.
   app:
     depends_on:
-      - db
+      - db                           # depends-on-ignores-healthcheck (warn) — db has a healthcheck, short form doesn't wait for it
       - cache                        # depends-on-unknown (error) — no such service here
     build:
       context: .

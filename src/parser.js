@@ -3,6 +3,7 @@
 // {
 //   services: [{
 //     name, image, depends_on, networks, ports,
+//     dependsOnConditions: {dep: string|null}, // long-form `condition` per dependency; null = none given (short form)
 //     environment: [{key, value}],   // value is null for `KEY=` and for interpolation refs like ${X}
 //     restart: string|null,
 //     healthcheck: object|null,
@@ -75,6 +76,7 @@ window.DockerScope.parseCompose = function (yamlText, fileMap) {
       name,
       image: raw.image || raw.build ? (raw.image || "(build)") : null,
       depends_on: parseDependsOn(raw.depends_on),
+      dependsOnConditions: parseDependsOnConditions(raw.depends_on),
       networks: parseServiceNetworks(raw.networks),
       ports: parsePorts(raw.ports, warnings, name),
       environment: parseEnvironment(raw.environment),
@@ -133,6 +135,25 @@ function parseDependsOn(value) {
   if (Array.isArray(value)) return value.map(String);
   if (typeof value === "object") return Object.keys(value);
   return [];
+}
+
+// The long form of depends_on carries a per-dependency `condition`; the short
+// (list) form carries none. Kept beside the flat name list so consumers that
+// only need edges keep using depends_on. null = no condition given (short
+// form or an empty long-form entry), which Compose treats as service_started.
+function parseDependsOnConditions(value) {
+  const conditions = {};
+  if (Array.isArray(value)) {
+    for (const name of value) conditions[String(name)] = null;
+  } else if (value && typeof value === "object") {
+    for (const [name, spec] of Object.entries(value)) {
+      conditions[name] =
+        spec && typeof spec === "object" && typeof spec.condition === "string"
+          ? spec.condition
+          : null;
+    }
+  }
+  return conditions;
 }
 
 // `cap_add` is a YAML list of Linux capability names. Normalise to an array of

@@ -365,6 +365,69 @@ test('depends-on-unknown fires on a ghost service, quiet on real ones (both form
   assert.ok(!DS.lint(DS.parseCompose(mapForm)).findings.some((f) => f.rule === 'depends-on-unknown'));
 });
 
+test('depends-on-ignores-healthcheck fires on the short form when the target has a healthcheck', () => {
+  const yaml = [
+    'services:',
+    '  api:',
+    '    image: node:22',
+    '    depends_on:',
+    '      - db',
+    '  db:',
+    '    image: postgres:16',
+    '    healthcheck:',
+    '      test: ["CMD-SHELL", "pg_isready"]',
+  ].join('\n');
+  const hits = DS.lint(DS.parseCompose(yaml)).findings.filter((f) => f.rule === 'depends-on-ignores-healthcheck');
+  assert.equal(hits.length, 1);
+  assert.equal(hits[0].service, 'api');
+  assert.equal(hits[0].level, 'warn');
+  assert.match(hits[0].message, /db/);
+  assert.match(hits[0].hint, /service_healthy/);
+});
+
+test('depends-on-ignores-healthcheck also fires on a long-form entry with no condition', () => {
+  const yaml = [
+    'services:',
+    '  api:',
+    '    image: node:22',
+    '    depends_on:',
+    '      db: {}',
+    '  db:',
+    '    image: postgres:16',
+    '    healthcheck:',
+    '      test: ["CMD-SHELL", "pg_isready"]',
+  ].join('\n');
+  assert.ok(DS.lint(DS.parseCompose(yaml)).findings.some((f) => f.rule === 'depends-on-ignores-healthcheck'));
+});
+
+test('depends-on-ignores-healthcheck stays quiet for service_healthy, completed jobs, and healthcheck-less targets', () => {
+  const healthy = [
+    'services:',
+    '  api:',
+    '    image: node:22',
+    '    depends_on:',
+    '      db:',
+    '        condition: service_healthy',
+    '  migrate:',
+    '    image: migrate/migrate:v4.17.0',
+    '    depends_on:',
+    '      db:',
+    '        condition: service_completed_successfully',
+    '  worker:',
+    '    image: node:22',
+    '    depends_on:',
+    '      - plain',
+    '  db:',
+    '    image: postgres:16',
+    '    healthcheck:',
+    '      test: ["CMD-SHELL", "pg_isready"]',
+    '  plain:',
+    '    image: redis:7',
+  ].join('\n');
+  const { findings } = DS.lint(DS.parseCompose(healthy));
+  assert.ok(!findings.some((f) => f.rule === 'depends-on-ignores-healthcheck'));
+});
+
 test('the insecure sample trips every security rule at once', () => {
   const rules = new Set(DS.lint(DS.parseCompose(sample('insecure.yml'))).findings.map((f) => f.rule));
   for (const r of [
@@ -372,7 +435,7 @@ test('the insecure sample trips every security rule at once', () => {
     'dangerous-cap', 'sensitive-host-mount', 'no-new-privileges',
     'env-secret', 'port-public', 'security-unconfined', 'build-arg-secret',
     'port-conflict', 'duplicate-container-name', 'depends-on-unknown',
-    'undeclared-network', 'undeclared-volume',
+    'depends-on-ignores-healthcheck', 'undeclared-network', 'undeclared-volume',
   ]) {
     assert.ok(rules.has(r), `expected rule '${r}'`);
   }
