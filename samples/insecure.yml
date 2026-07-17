@@ -44,6 +44,7 @@ services:
   # Locally-built app that receives a secret as a build arg — `docker history`
   # shows it to anyone who can pull the resulting image.
   app:
+    command: sh -c "./serve --api-token sk-live-987654"   # command-secret (error) — visible in docker inspect / ps
     depends_on:
       - db                           # depends-on-ignores-healthcheck (warn) — db has a healthcheck, short form doesn't wait for it
       - cache                        # depends-on-unknown (error) — no such service here

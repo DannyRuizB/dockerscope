@@ -14,6 +14,7 @@
 //     pidMode: string|null, ipcMode: string|null,  // e.g. "host"
 //     securityOpt: [string],          // raw security_opt entries, e.g. "no-new-privileges:true"
 //     buildArgs: [{key, value}],      // build.args normalized like environment
+//     command: string|null, entrypoint: string|null,  // space-joined if exec-form list
 //   }],
 //   networks: [string],
 //   namedVolumes: [string],         // volumes used by services + declared at top level
@@ -90,6 +91,10 @@ window.DockerScope.parseCompose = function (yamlText, fileMap) {
       pidMode: typeof raw.pid === "string" ? raw.pid : null,
       ipcMode: typeof raw.ipc === "string" ? raw.ipc : null,
       securityOpt: Array.isArray(raw.security_opt) ? raw.security_opt.map(String) : [],
+      // command / entrypoint accept a string or an exec-form list; normalize
+      // both to one space-joined string — the linter only scans, never runs.
+      command: normalizeCommand(raw.command),
+      entrypoint: normalizeCommand(raw.entrypoint),
       // build.args accepts the same two shapes as environment (list of
       // "KEY=value" strings, or a mapping) — reuse the same normalizer.
       buildArgs: parseEnvironment(
@@ -135,6 +140,14 @@ function parseDependsOn(value) {
   if (Array.isArray(value)) return value.map(String);
   if (typeof value === "object") return Object.keys(value);
   return [];
+}
+
+// command / entrypoint: string form stays as-is, exec-form list joins with
+// spaces, anything else (absent, mapping garbage) becomes null.
+function normalizeCommand(value) {
+  if (typeof value === "string") return value;
+  if (Array.isArray(value)) return value.map(String).join(" ");
+  return null;
 }
 
 // The long form of depends_on carries a per-dependency `condition`; the short
