@@ -333,6 +333,37 @@ function ruleDuplicateContainerName(svc, model) {
   return [];
 }
 
+// container_name pins the single name the container gets, but replicas need
+// N distinct names — Compose refuses the file up front ("can't set container
+// name and replicas"). Same family as the other file-rejecting rules. The
+// legacy service-level `scale:` behaves identically and is folded into
+// svc.replicas by the parser.
+function ruleContainerNameWithReplicas(svc) {
+  if (!svc.containerName || !(svc.replicas > 1)) return [];
+  return [{
+    level: "error",
+    rule: "container-name-with-replicas",
+    message: `\`container_name: ${svc.containerName}\` together with \`replicas: ${svc.replicas}\` — a container name is unique, so the service cannot be replicated and Compose refuses the file.`,
+    hint: "Drop `container_name` (Compose numbers the replicas itself: project-service-1, -2, …) or set replicas to 1.",
+  }];
+}
+
+// A healthcheck's grace period defaults to 0s: every probe that fails while
+// the service is still booting eats into `retries`, so a slow starter (JVM
+// warmup, DB crash recovery) is marked unhealthy before it ever gets going —
+// and a dependent waiting on `condition: service_healthy` then never starts.
+function ruleHealthcheckNoStartPeriod(svc) {
+  const hc = svc.healthcheck;
+  if (!hc || hc.disable === true) return [];
+  if (hc.start_period != null) return [];
+  return [{
+    level: "warn",
+    rule: "healthcheck-no-start-period",
+    message: "`healthcheck` has no `start_period` — probe failures during boot count against `retries` from second zero.",
+    hint: "Add `start_period` sized to the service's boot time (e.g. `start_period: 30s`) so warmup failures don't mark it unhealthy.",
+  }];
+}
+
 // depends_on must name services that exist in the same file: Compose refuses
 // the whole file otherwise ("service ... depends on undefined service").
 // Classic ways to hit it: a rename that missed the depends_on line, or a
@@ -494,6 +525,8 @@ const RULES = [
   ruleCommandSecret,
   rulePortConflict,
   ruleDuplicateContainerName,
+  ruleContainerNameWithReplicas,
+  ruleHealthcheckNoStartPeriod,
   ruleDependsOnUnknown,
   ruleDependsOnIgnoresHealthcheck,
   ruleUndeclaredNetwork,

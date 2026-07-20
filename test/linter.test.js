@@ -71,6 +71,7 @@ test('a fully-specified service produces no findings', () => {
     '    restart: unless-stopped',
     '    healthcheck:',
     '      test: ["CMD", "true"]',
+    '      start_period: 10s',
   ].join('\n');
   const { findings } = DS.lint(DS.parseCompose(yaml));
   assert.equal(findings.filter((f) => f.service === 'ok').length, 0);
@@ -479,6 +480,7 @@ test('the insecure sample trips every security rule at once', () => {
     'env-secret', 'port-public', 'security-unconfined', 'build-arg-secret', 'command-secret',
     'port-conflict', 'duplicate-container-name', 'depends-on-unknown',
     'depends-on-ignores-healthcheck', 'undeclared-network', 'undeclared-volume',
+    'container-name-with-replicas', 'healthcheck-no-start-period',
   ]) {
     assert.ok(rules.has(r), `expected rule '${r}'`);
   }
@@ -530,4 +532,84 @@ test('undeclared refs with interpolated names are skipped (value comes from outs
     '      - ${NET_NAME}',
   ].join('\n');
   assert.ok(!DS.lint(DS.parseCompose(rs)).findings.some((f) => f.rule === 'undeclared-network'));
+});
+
+test('container-name-with-replicas fires on a fixed name with replicas > 1', () => {
+  const compose = [
+    'services:',
+    '  web:',
+    '    image: nginx:1.27',
+    '    container_name: front',
+    '    deploy:',
+    '      replicas: 3',
+  ].join('\n');
+  const found = DS.lint(DS.parseCompose(compose)).findings.filter((f) => f.rule === 'container-name-with-replicas');
+  assert.equal(found.length, 1);
+  assert.equal(found[0].level, 'error');
+  assert.match(found[0].message, /front/);
+  assert.match(found[0].message, /replicas: 3/);
+});
+
+test('container-name-with-replicas understands the legacy scale key', () => {
+  const compose = [
+    'services:',
+    '  web:',
+    '    image: nginx:1.27',
+    '    container_name: front',
+    '    scale: 2',
+  ].join('\n');
+  const found = DS.lint(DS.parseCompose(compose)).findings.filter((f) => f.rule === 'container-name-with-replicas');
+  assert.equal(found.length, 1);
+});
+
+test('container-name-with-replicas stays quiet on 1 replica or without a fixed name', () => {
+  const compose = [
+    'services:',
+    '  one:',
+    '    image: nginx:1.27',
+    '    container_name: front',
+    '    deploy:',
+    '      replicas: 1',
+    '  many:',
+    '    image: nginx:1.27',
+    '    deploy:',
+    '      replicas: 4',
+  ].join('\n');
+  const { findings } = DS.lint(DS.parseCompose(compose));
+  assert.ok(!findings.some((f) => f.rule === 'container-name-with-replicas'));
+});
+
+test('healthcheck-no-start-period fires without start_period, quiet with it or when disabled', () => {
+  const compose = [
+    'services:',
+    '  flappy:',
+    '    image: postgres:16',
+    '    healthcheck:',
+    '      test: ["CMD-SHELL", "pg_isready"]',
+    '      retries: 3',
+    '  patient:',
+    '    image: postgres:16',
+    '    healthcheck:',
+    '      test: ["CMD-SHELL", "pg_isready"]',
+    '      start_period: 30s',
+    '  optout:',
+    '    image: postgres:16',
+    '    healthcheck:',
+    '      disable: true',
+  ].join('\n');
+  const found = DS.lint(DS.parseCompose(compose)).findings.filter((f) => f.rule === 'healthcheck-no-start-period');
+  assert.equal(found.length, 1);
+  assert.equal(found[0].service, 'flappy');
+  assert.equal(found[0].level, 'warn');
+});
+
+test('healthcheck-no-start-period leaves services with no healthcheck to no-healthcheck', () => {
+  const compose = [
+    'services:',
+    '  bare:',
+    '    image: nginx:1.27',
+  ].join('\n');
+  const { findings } = DS.lint(DS.parseCompose(compose));
+  assert.ok(!findings.some((f) => f.rule === 'healthcheck-no-start-period'));
+  assert.ok(findings.some((f) => f.rule === 'no-healthcheck'));
 });
