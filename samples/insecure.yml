@@ -5,6 +5,8 @@ services:
   proxy:
     image: traefik:latest            # image-latest
     container_name: edge
+    deploy:
+      replicas: 2                    # container-name-with-replicas (error) — a fixed name can't be replicated
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock   # docker-socket-mount (error)
     ports:
@@ -31,7 +33,7 @@ services:
     image: postgres:16
     healthcheck:                     # defined… but see app's depends_on below
       test: ["CMD-SHELL", "pg_isready -U postgres"]
-      interval: 10s
+      interval: 10s                  # healthcheck-no-start-period (warn) — boot failures count against retries
     environment:
       POSTGRES_PASSWORD: hunter2     # env-secret (error)
     ports:

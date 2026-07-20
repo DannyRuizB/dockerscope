@@ -83,6 +83,9 @@ window.DockerScope.parseCompose = function (yamlText, fileMap) {
       environment: parseEnvironment(raw.environment),
       restart: typeof raw.restart === "string" ? raw.restart : null,
       containerName: typeof raw.container_name === "string" ? raw.container_name : null,
+      // deploy.replicas, falling back to the legacy service-level `scale`.
+      // Only plain numbers are kept — interpolations stay null.
+      replicas: parseReplicas(raw),
       healthcheck: raw.healthcheck && typeof raw.healthcheck === "object" ? raw.healthcheck : null,
       volumes: parseVolumes(raw.volumes, topVolumeSet, warnings, name),
       privileged: raw.privileged === true,
@@ -134,6 +137,15 @@ window.DockerScope.parseCompose = function (yamlText, fileMap) {
     warnings,
   };
 };
+
+function parseReplicas(raw) {
+  const v = raw.deploy && typeof raw.deploy === "object" && raw.deploy.replicas != null
+    ? raw.deploy.replicas
+    : raw.scale;
+  if (typeof v === "number" && Number.isFinite(v)) return v;
+  if (typeof v === "string" && /^\d+$/.test(v)) return Number(v);
+  return null;
+}
 
 function parseDependsOn(value) {
   if (!value) return [];
