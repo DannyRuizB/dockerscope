@@ -69,6 +69,7 @@ test('a fully-specified service produces no findings', () => {
     '  ok:',
     '    image: nginx:1.27',
     '    restart: unless-stopped',
+    '    cap_drop: ["ALL"]',
     '    healthcheck:',
     '      test: ["CMD", "true"]',
     '      start_period: 10s',
@@ -730,4 +731,73 @@ test('parser normalizes pidsLimit from either spelling, null when absent', () =>
   assert.equal(by.a, 256);
   assert.equal(by.b, 128);
   assert.equal(by.c, null);
+});
+
+test('no-cap-drop fires when a service keeps the default capability set', () => {
+  const compose = [
+    'services:',
+    '  bare:',
+    '    image: nginx:1.27',
+  ].join('\n');
+  const { findings } = DS.lint(DS.parseCompose(compose));
+  const hits = findings.filter((f) => f.rule === 'no-cap-drop');
+  assert.equal(hits.length, 1);
+  assert.equal(hits[0].service, 'bare');
+  assert.equal(hits[0].level, 'warn');
+});
+
+test('no-cap-drop is cleared by cap_drop ALL (with or without CAP_ prefix)', () => {
+  const compose = [
+    'services:',
+    '  a:',
+    '    image: nginx:1.27',
+    '    cap_drop: ["ALL"]',
+    '  b:',
+    '    image: redis:7.4',
+    '    cap_drop: ["CAP_ALL"]',
+  ].join('\n');
+  const { findings } = DS.lint(DS.parseCompose(compose));
+  assert.ok(!findings.some((f) => f.rule === 'no-cap-drop'));
+});
+
+test('no-cap-drop still fires on a partial drop (not least privilege)', () => {
+  // Dropping a couple of caps is better than nothing but not cap_drop: [ALL].
+  const compose = [
+    'services:',
+    '  partial:',
+    '    image: nginx:1.27',
+    '    cap_drop: ["NET_RAW", "MKNOD"]',
+  ].join('\n');
+  const { findings } = DS.lint(DS.parseCompose(compose));
+  assert.ok(findings.some((f) => f.rule === 'no-cap-drop' && f.service === 'partial'));
+});
+
+test('no-cap-drop composes with dangerous-cap (drop ALL then add back one)', () => {
+  // Least privilege done wrong: adds SYS_ADMIN but never drops the baseline.
+  const compose = [
+    'services:',
+    '  x:',
+    '    image: nginx:1.27',
+    '    cap_add: ["SYS_ADMIN"]',
+  ].join('\n');
+  const rules = DS.lint(DS.parseCompose(compose)).findings.map((f) => f.rule);
+  assert.ok(rules.includes('no-cap-drop'));
+  assert.ok(rules.includes('dangerous-cap'));
+});
+
+test('parser surfaces capDrop, upper-cased, empty when absent', () => {
+  const compose = [
+    'services:',
+    '  a:',
+    '    image: nginx:1.27',
+    '    cap_drop: ["all", "net_raw"]',
+    '  b:',
+    '    image: redis:7.4',
+  ].join('\n');
+  const model = DS.parseCompose(compose);
+  const by = Object.fromEntries(model.services.map((s) => [s.name, s.capDrop]));
+  // JSON compare: parser output comes from the vm sandbox (cross-realm),
+  // so deepEqual on the arrays fails on reference identity.
+  assert.equal(JSON.stringify(by.a), JSON.stringify(['ALL', 'NET_RAW']));
+  assert.equal(JSON.stringify(by.b), '[]');
 });
