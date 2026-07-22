@@ -101,6 +101,22 @@ function ruleNoMemoryLimit(svc) {
   }];
 }
 
+// A container with no PID cap can fill the host's process table: a fork bomb
+// (or a runaway worker pool) starves every process on the machine, including
+// the ones you'd use to fix it. Either spelling counts as capped:
+// `deploy.resources.limits.pids` or the legacy `pids_limit`. Completes the
+// resource-caps pair with no-memory-limit — memory kills by OOM, PIDs kill
+// by exhaustion.
+function ruleNoPidsLimit(svc) {
+  if (svc.pidsLimit != null) return [];
+  return [{
+    level: "warn",
+    rule: "no-pids-limit",
+    message: "no PID limit — a fork bomb here can exhaust the host's process table.",
+    hint: "Set `deploy.resources.limits.pids` (e.g. `256`) or the legacy `pids_limit`.",
+  }];
+}
+
 function ruleNoHealthcheck(svc) {
   if (svc.healthcheck) return [];
   return [{
@@ -530,6 +546,7 @@ const RULES = [
   ruleNoRestart,
   ruleNoHealthcheck,
   ruleNoMemoryLimit,
+  ruleNoPidsLimit,
   ruleDockerSocket,
   rulePrivileged,
   ruleHostNamespace,

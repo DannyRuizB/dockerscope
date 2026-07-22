@@ -76,6 +76,7 @@ test('a fully-specified service produces no findings', () => {
     '      resources:',
     '        limits:',
     '          memory: 512M',
+    '          pids: 256',
   ].join('\n');
   const { findings } = DS.lint(DS.parseCompose(yaml));
   assert.equal(findings.filter((f) => f.service === 'ok').length, 0);
@@ -679,5 +680,54 @@ test('parser normalizes memoryLimit from either spelling, null when absent', () 
   const by = Object.fromEntries(model.services.map((s) => [s.name, s.memoryLimit]));
   assert.equal(by.a, '512M');
   assert.equal(by.b, '268435456');
+  assert.equal(by.c, null);
+});
+
+test('no-pids-limit fires on an uncapped service', () => {
+  const compose = [
+    'services:',
+    '  forky:',
+    '    image: nginx:1.27',
+  ].join('\n');
+  const { findings } = DS.lint(DS.parseCompose(compose));
+  const hits = findings.filter((f) => f.rule === 'no-pids-limit');
+  assert.equal(hits.length, 1);
+  assert.equal(hits[0].service, 'forky');
+  assert.equal(hits[0].level, 'warn');
+});
+
+test('no-pids-limit accepts both the deploy form and the legacy pids_limit', () => {
+  const compose = [
+    'services:',
+    '  modern:',
+    '    image: nginx:1.27',
+    '    deploy:',
+    '      resources:',
+    '        limits:',
+    '          pids: 256',
+    '  legacy:',
+    '    image: redis:7.4',
+    '    pids_limit: 128',
+  ].join('\n');
+  const { findings } = DS.lint(DS.parseCompose(compose));
+  assert.ok(!findings.some((f) => f.rule === 'no-pids-limit'));
+});
+
+test('parser normalizes pidsLimit from either spelling, null when absent', () => {
+  const compose = [
+    'services:',
+    '  a:',
+    '    image: nginx:1.27',
+    '    deploy: { resources: { limits: { pids: 256 } } }',
+    '  b:',
+    '    image: redis:7.4',
+    '    pids_limit: "128"',
+    '  c:',
+    '    image: postgres:17',
+  ].join('\n');
+  const model = DS.parseCompose(compose);
+  const by = Object.fromEntries(model.services.map((s) => [s.name, s.pidsLimit]));
+  assert.equal(by.a, 256);
+  assert.equal(by.b, 128);
   assert.equal(by.c, null);
 });
