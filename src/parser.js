@@ -97,6 +97,7 @@ window.DockerScope.parseCompose = function (yamlText, fileMap) {
       volumes: parseVolumes(raw.volumes, topVolumeSet, warnings, name),
       privileged: raw.privileged === true,
       capAdd: parseCapAdd(raw.cap_add),
+      capDrop: parseCapAdd(raw.cap_drop),
       networkMode: typeof raw.network_mode === "string" ? raw.network_mode : null,
       pidMode: typeof raw.pid === "string" ? raw.pid : null,
       ipcMode: typeof raw.ipc === "string" ? raw.ipc : null,
@@ -212,8 +213,8 @@ function parseDependsOnConditions(value) {
   return conditions;
 }
 
-// `cap_add` is a YAML list of Linux capability names. Normalise to an array of
-// upper-case strings (compose accepts them with or without the CAP_ prefix).
+// `cap_add` / `cap_drop` are YAML lists of Linux capability names. Normalise
+// to upper-case strings (compose accepts them with or without the CAP_ prefix).
 function parseCapAdd(value) {
   if (!Array.isArray(value)) return [];
   return value.map(v => String(v).toUpperCase());

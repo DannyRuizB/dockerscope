@@ -240,6 +240,24 @@ function ruleSensitiveHostMount(svc) {
 // Added capabilities survive across setuid/sudo binaries unless the kernel is
 // told not to elevate: `no-new-privileges` closes that escalation path and is
 // close to free for services that don't rely on setuid.
+// Docker starts every container with ~14 capabilities the app almost never
+// needs (CHOWN, SETUID, NET_RAW, MKNOD…). Least privilege is `cap_drop: [ALL]`
+// then `cap_add` only what's required. A container that never drops ALL keeps
+// the whole default set — extra kernel surface an escape can reach for.
+// Complements dangerous-cap (that one flags risky things *added*; this one
+// flags the baseline never being *dropped*). A partial drop is better than
+// nothing but still isn't least privilege, so only dropping ALL clears it.
+function ruleNoCapDrop(svc) {
+  const dropsAll = svc.capDrop.some((c) => c.replace(/^CAP_/, "") === "ALL");
+  if (dropsAll) return [];
+  return [{
+    level: "warn",
+    rule: "no-cap-drop",
+    message: "keeps Docker's default capabilities — no `cap_drop: [ALL]`.",
+    hint: "Add `cap_drop: [\"ALL\"]` and `cap_add` only the capabilities the service actually needs.",
+  }];
+}
+
 const NO_NEW_PRIVS_PATTERN = /^no-new-privileges(:true|=true)?$/;
 function ruleNoNewPrivileges(svc) {
   if (svc.capAdd.length === 0) return [];
@@ -553,6 +571,7 @@ const RULES = [
   ruleDangerousCaps,
   ruleSensitiveHostMount,
   ruleNoNewPrivileges,
+  ruleNoCapDrop,
   ruleSecurityUnconfined,
   ruleBuildArgSecret,
   ruleCommandSecret,
