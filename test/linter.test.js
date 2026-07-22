@@ -72,6 +72,10 @@ test('a fully-specified service produces no findings', () => {
     '    healthcheck:',
     '      test: ["CMD", "true"]',
     '      start_period: 10s',
+    '    deploy:',
+    '      resources:',
+    '        limits:',
+    '          memory: 512M',
   ].join('\n');
   const { findings } = DS.lint(DS.parseCompose(yaml));
   assert.equal(findings.filter((f) => f.service === 'ok').length, 0);
@@ -612,4 +616,68 @@ test('healthcheck-no-start-period leaves services with no healthcheck to no-heal
   const { findings } = DS.lint(DS.parseCompose(compose));
   assert.ok(!findings.some((f) => f.rule === 'healthcheck-no-start-period'));
   assert.ok(findings.some((f) => f.rule === 'no-healthcheck'));
+});
+
+test('no-memory-limit fires on an uncapped service', () => {
+  const compose = [
+    'services:',
+    '  greedy:',
+    '    image: nginx:1.27',
+  ].join('\n');
+  const { findings } = DS.lint(DS.parseCompose(compose));
+  const hits = findings.filter((f) => f.rule === 'no-memory-limit');
+  assert.equal(hits.length, 1);
+  assert.equal(hits[0].service, 'greedy');
+  assert.equal(hits[0].level, 'warn');
+});
+
+test('no-memory-limit accepts both the deploy form and the legacy mem_limit', () => {
+  const compose = [
+    'services:',
+    '  modern:',
+    '    image: nginx:1.27',
+    '    deploy:',
+    '      resources:',
+    '        limits:',
+    '          memory: 512M',
+    '  legacy:',
+    '    image: redis:7.4',
+    '    mem_limit: 256m',
+  ].join('\n');
+  const { findings } = DS.lint(DS.parseCompose(compose));
+  assert.ok(!findings.some((f) => f.rule === 'no-memory-limit'));
+});
+
+test('no-memory-limit still fires when limits only cap cpus', () => {
+  // A cpus-only limit is a real limits block, but memory is what OOMs hosts.
+  const compose = [
+    'services:',
+    '  cpuonly:',
+    '    image: nginx:1.27',
+    '    deploy:',
+    '      resources:',
+    '        limits:',
+    '          cpus: "0.5"',
+  ].join('\n');
+  const { findings } = DS.lint(DS.parseCompose(compose));
+  assert.ok(findings.some((f) => f.rule === 'no-memory-limit' && f.service === 'cpuonly'));
+});
+
+test('parser normalizes memoryLimit from either spelling, null when absent', () => {
+  const compose = [
+    'services:',
+    '  a:',
+    '    image: nginx:1.27',
+    '    deploy: { resources: { limits: { memory: 512M } } }',
+    '  b:',
+    '    image: redis:7.4',
+    '    mem_limit: 268435456',
+    '  c:',
+    '    image: postgres:17',
+  ].join('\n');
+  const model = DS.parseCompose(compose);
+  const by = Object.fromEntries(model.services.map((s) => [s.name, s.memoryLimit]));
+  assert.equal(by.a, '512M');
+  assert.equal(by.b, '268435456');
+  assert.equal(by.c, null);
 });

@@ -86,6 +86,21 @@ function ruleNoRestart(svc) {
   }];
 }
 
+// A service with no memory cap competes with everything else on the host: one
+// leak and the kernel OOM killer starts shooting host-wide — other containers
+// and the Docker daemon included. `docker compose` applies
+// `deploy.resources.limits` outside Swarm since v2, and the legacy `mem_limit`
+// still works; either counts as capped.
+function ruleNoMemoryLimit(svc) {
+  if (svc.memoryLimit != null) return [];
+  return [{
+    level: "warn",
+    rule: "no-memory-limit",
+    message: "no memory limit — a leak here can OOM the whole host.",
+    hint: "Set `deploy.resources.limits.memory` (e.g. `512M`) or the legacy `mem_limit`.",
+  }];
+}
+
 function ruleNoHealthcheck(svc) {
   if (svc.healthcheck) return [];
   return [{
@@ -514,6 +529,7 @@ const RULES = [
   rulePortPublic,
   ruleNoRestart,
   ruleNoHealthcheck,
+  ruleNoMemoryLimit,
   ruleDockerSocket,
   rulePrivileged,
   ruleHostNamespace,

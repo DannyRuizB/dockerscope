@@ -86,6 +86,10 @@ window.DockerScope.parseCompose = function (yamlText, fileMap) {
       // deploy.replicas, falling back to the legacy service-level `scale`.
       // Only plain numbers are kept — interpolations stay null.
       replicas: parseReplicas(raw),
+      // Memory limit: modern `deploy.resources.limits.memory`, falling back
+      // to the legacy service-level `mem_limit`. Kept as the raw string
+      // ("512M"); numeric byte values are stringified.
+      memoryLimit: parseMemoryLimit(raw),
       healthcheck: raw.healthcheck && typeof raw.healthcheck === "object" ? raw.healthcheck : null,
       volumes: parseVolumes(raw.volumes, topVolumeSet, warnings, name),
       privileged: raw.privileged === true,
@@ -144,6 +148,18 @@ function parseReplicas(raw) {
     : raw.scale;
   if (typeof v === "number" && Number.isFinite(v)) return v;
   if (typeof v === "string" && /^\d+$/.test(v)) return Number(v);
+  return null;
+}
+
+function parseMemoryLimit(raw) {
+  const deploy = raw.deploy && typeof raw.deploy === "object" ? raw.deploy : null;
+  const resources = deploy && deploy.resources && typeof deploy.resources === "object"
+    ? deploy.resources : null;
+  const limits = resources && resources.limits && typeof resources.limits === "object"
+    ? resources.limits : null;
+  const v = limits && limits.memory != null ? limits.memory : raw.mem_limit;
+  if (typeof v === "string" && v.trim() !== "") return v.trim();
+  if (typeof v === "number" && Number.isFinite(v)) return String(v);
   return null;
 }
 
