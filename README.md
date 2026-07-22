@@ -3,6 +3,10 @@
 > Visual analyzer for `docker-compose.yml` — paste a compose file, see the architecture.
 
 [![lint](https://github.com/DannyRuizB/dockerscope/actions/workflows/lint.yml/badge.svg)](https://github.com/DannyRuizB/dockerscope/actions/workflows/lint.yml)
+[![Live demo](https://img.shields.io/badge/demo-dannyruizb.github.io%2Fdockerscope-3b82f6)](https://dannyruizb.github.io/dockerscope/)
+![No backend](https://img.shields.io/badge/backend-none%20·%20runs%20in%20your%20browser-f59e0b)
+![Analyzes](https://img.shields.io/badge/analyzes-compose%20·%20Dockerfile%20·%20stack-6366f1)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
 ### [Try the live demo →](https://dannyruizb.github.io/dockerscope/)
 
