@@ -96,6 +96,7 @@ window.DockerScope.parseCompose = function (yamlText, fileMap) {
       healthcheck: raw.healthcheck && typeof raw.healthcheck === "object" ? raw.healthcheck : null,
       volumes: parseVolumes(raw.volumes, topVolumeSet, warnings, name),
       privileged: raw.privileged === true,
+      readOnly: raw.read_only === true,
       capAdd: parseCapAdd(raw.cap_add),
       capDrop: parseCapAdd(raw.cap_drop),
       networkMode: typeof raw.network_mode === "string" ? raw.network_mode : null,

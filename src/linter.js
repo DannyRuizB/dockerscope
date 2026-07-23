@@ -258,6 +258,25 @@ function ruleNoCapDrop(svc) {
   }];
 }
 
+// A writable root filesystem is what turns a foothold into a base of
+// operations: a compromised process can drop tooling, patch binaries and
+// persist across the exploit session. `read_only: true` makes the image
+// content immutable at runtime and costs one line — apps that need scratch
+// space keep it via explicit `tmpfs` / volume mounts, which is exactly the
+// point: writable paths become an inventory instead of a default. Completes
+// the least-privilege trio: no-cap-drop (kernel surface), no-new-privileges
+// (escalation), and this one (filesystem). Volumes stay writable — the rule
+// judges only the rootfs.
+function ruleNoReadOnly(svc) {
+  if (svc.readOnly) return [];
+  return [{
+    level: "warn",
+    rule: "no-read-only",
+    message: "runs with a writable root filesystem — no `read_only: true`.",
+    hint: "Add `read_only: true` and give the service explicit scratch space where needed (`tmpfs: [/tmp]`, or a named volume) — writable paths become a deliberate inventory instead of the default.",
+  }];
+}
+
 const NO_NEW_PRIVS_PATTERN = /^no-new-privileges(:true|=true)?$/;
 function ruleNoNewPrivileges(svc) {
   if (svc.capAdd.length === 0) return [];
@@ -572,6 +591,7 @@ const RULES = [
   ruleSensitiveHostMount,
   ruleNoNewPrivileges,
   ruleNoCapDrop,
+  ruleNoReadOnly,
   ruleSecurityUnconfined,
   ruleBuildArgSecret,
   ruleCommandSecret,
