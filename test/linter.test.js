@@ -71,6 +71,10 @@ test('a fully-specified service produces no findings', () => {
     '    restart: unless-stopped',
     '    cap_drop: ["ALL"]',
     '    read_only: true',
+    '    logging:',
+    '      driver: json-file',
+    '      options:',
+    '        max-size: "10m"',
     '    healthcheck:',
     '      test: ["CMD", "true"]',
     '      start_period: 10s',
@@ -859,4 +863,63 @@ test('parser surfaces readOnly as a strict boolean', () => {
   const by = Object.fromEntries(model.services.map((s) => [s.name, s.readOnly]));
   assert.equal(by.a, true);
   assert.equal(by.b, false);
+});
+
+test('no-log-limit fires on the default driver and on json-file without max-size', () => {
+  const compose = [
+    'services:',
+    '  default:',
+    '    image: nginx:1.27',
+    '  explicit:',
+    '    image: nginx:1.27',
+    '    logging:',
+    '      driver: json-file',
+  ].join('\n');
+  const hits = DS.lint(DS.parseCompose(compose)).findings.filter((f) => f.rule === 'no-log-limit');
+  assert.equal(hits.length, 2);
+  assert.ok(hits.every((f) => f.level === 'warn'));
+});
+
+test('no-log-limit is cleared by max-size, and non-json-file drivers are spared', () => {
+  const compose = [
+    'services:',
+    '  bounded:',
+    '    image: nginx:1.27',
+    '    logging:',
+    '      driver: json-file',
+    '      options:',
+    '        max-size: "10m"',
+    '  local:',
+    '    image: nginx:1.27',
+    '    logging:',
+    '      driver: local',
+    '  journald:',
+    '    image: nginx:1.27',
+    '    logging:',
+    '      driver: journald',
+    '  silent:',
+    '    image: nginx:1.27',
+    '    logging:',
+    '      driver: none',
+  ].join('\n');
+  assert.ok(!DS.lint(DS.parseCompose(compose)).findings.some((f) => f.rule === 'no-log-limit'));
+});
+
+test('parser surfaces logDriver and logMaxSize', () => {
+  const compose = [
+    'services:',
+    '  a:',
+    '    image: nginx:1.27',
+    '    logging:',
+    '      driver: json-file',
+    '      options:',
+    '        max-size: "5m"',
+    '  b:',
+    '    image: redis:7.4',
+  ].join('\n');
+  const by = Object.fromEntries(DS.parseCompose(compose).services.map((s) => [s.name, s]));
+  assert.equal(by.a.logDriver, 'json-file');
+  assert.equal(by.a.logMaxSize, '5m');
+  assert.equal(by.b.logDriver, null);
+  assert.equal(by.b.logMaxSize, null);
 });

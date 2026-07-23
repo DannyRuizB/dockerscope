@@ -93,6 +93,10 @@ window.DockerScope.parseCompose = function (yamlText, fileMap) {
       // PID cap: modern `deploy.resources.limits.pids` (integer), falling
       // back to the legacy service-level `pids_limit`.
       pidsLimit: parsePidsLimit(raw),
+      // Log rotation: the driver name (null = compose default, json-file)
+      // and the max-size option, if any — what no-log-limit judges.
+      logDriver: parseLogDriver(raw),
+      logMaxSize: parseLogMaxSize(raw),
       healthcheck: raw.healthcheck && typeof raw.healthcheck === "object" ? raw.healthcheck : null,
       volumes: parseVolumes(raw.volumes, topVolumeSet, warnings, name),
       privileged: raw.privileged === true,
@@ -153,6 +157,21 @@ function parseReplicas(raw) {
     : raw.scale;
   if (typeof v === "number" && Number.isFinite(v)) return v;
   if (typeof v === "string" && /^\d+$/.test(v)) return Number(v);
+  return null;
+}
+
+function parseLogDriver(raw) {
+  const logging = raw.logging && typeof raw.logging === "object" ? raw.logging : null;
+  return logging && typeof logging.driver === "string" ? logging.driver : null;
+}
+
+function parseLogMaxSize(raw) {
+  const logging = raw.logging && typeof raw.logging === "object" ? raw.logging : null;
+  const options = logging && logging.options && typeof logging.options === "object"
+    ? logging.options : null;
+  const v = options ? options["max-size"] : null;
+  if (typeof v === "string" && v.trim()) return v.trim();
+  if (typeof v === "number" && Number.isFinite(v)) return String(v);
   return null;
 }
 

@@ -117,6 +117,27 @@ function ruleNoPidsLimit(svc) {
   }];
 }
 
+// Docker's default logging driver (json-file) keeps EVERYTHING a container
+// ever wrote to stdout/stderr, unrotated — a chatty or misbehaving service
+// fills the host disk from /var/lib/docker/containers, and the classic
+// discovery path is "why is the box read-only?" at 3am. `max-size` bounds it
+// in one line. Drivers other than json-file are spared: `local` rotates by
+// default, journald/syslog/fluentd/gelf hand the stream to a system that has
+// its own retention, and `none` keeps nothing. Completes the disk-safety
+// trio: no-memory-limit (RAM), no-pids-limit (process table), this (disk).
+function ruleNoLogLimit(svc) {
+  if (svc.logDriver != null && svc.logDriver !== "json-file") return [];
+  if (svc.logMaxSize != null) return [];
+  return [{
+    level: "warn",
+    rule: "no-log-limit",
+    message: svc.logDriver === "json-file"
+      ? "json-file logging has no `max-size` — container logs grow unbounded."
+      : "no log rotation — the default json-file driver keeps every log line forever.",
+    hint: "Add `logging: { driver: json-file, options: { max-size: \"10m\", max-file: \"3\" } }` (or switch to the `local` driver, which rotates by default).",
+  }];
+}
+
 function ruleNoHealthcheck(svc) {
   if (svc.healthcheck) return [];
   return [{
@@ -584,6 +605,7 @@ const RULES = [
   ruleNoHealthcheck,
   ruleNoMemoryLimit,
   ruleNoPidsLimit,
+  ruleNoLogLimit,
   ruleDockerSocket,
   rulePrivileged,
   ruleHostNamespace,
