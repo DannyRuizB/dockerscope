@@ -70,6 +70,7 @@ test('a fully-specified service produces no findings', () => {
     '    image: nginx:1.27',
     '    restart: unless-stopped',
     '    cap_drop: ["ALL"]',
+    '    read_only: true',
     '    healthcheck:',
     '      test: ["CMD", "true"]',
     '      start_period: 10s',
@@ -800,4 +801,62 @@ test('parser surfaces capDrop, upper-cased, empty when absent', () => {
   // so deepEqual on the arrays fails on reference identity.
   assert.equal(JSON.stringify(by.a), JSON.stringify(['ALL', 'NET_RAW']));
   assert.equal(JSON.stringify(by.b), '[]');
+});
+
+test('no-read-only fires when a service keeps a writable root filesystem', () => {
+  const compose = [
+    'services:',
+    '  x:',
+    '    image: nginx:1.27',
+  ].join('\n');
+  const hits = DS.lint(DS.parseCompose(compose)).findings.filter((f) => f.rule === 'no-read-only');
+  assert.equal(hits.length, 1);
+  assert.equal(hits[0].level, 'warn');
+  assert.equal(hits[0].service, 'x');
+});
+
+test('no-read-only is cleared by read_only: true; an explicit false still fires', () => {
+  const compose = [
+    'services:',
+    '  locked:',
+    '    image: nginx:1.27',
+    '    read_only: true',
+    '  writable:',
+    '    image: nginx:1.27',
+    '    read_only: false',
+  ].join('\n');
+  const hits = DS.lint(DS.parseCompose(compose)).findings.filter((f) => f.rule === 'no-read-only');
+  assert.equal(JSON.stringify(hits.map((f) => f.service)), JSON.stringify(['writable']));
+});
+
+test('no-read-only judges only the rootfs — volumes and tmpfs stay legitimate', () => {
+  // The recommended shape: immutable image, scratch space via explicit mounts.
+  const compose = [
+    'services:',
+    '  x:',
+    '    image: nginx:1.27',
+    '    read_only: true',
+    '    tmpfs: [/tmp]',
+    '    volumes:',
+    '      - data:/var/lib/app',
+    'volumes:',
+    '  data:',
+  ].join('\n');
+  const { findings } = DS.lint(DS.parseCompose(compose));
+  assert.ok(!findings.some((f) => f.rule === 'no-read-only'));
+});
+
+test('parser surfaces readOnly as a strict boolean', () => {
+  const compose = [
+    'services:',
+    '  a:',
+    '    image: nginx:1.27',
+    '    read_only: true',
+    '  b:',
+    '    image: redis:7.4',
+  ].join('\n');
+  const model = DS.parseCompose(compose);
+  const by = Object.fromEntries(model.services.map((s) => [s.name, s.readOnly]));
+  assert.equal(by.a, true);
+  assert.equal(by.b, false);
 });
