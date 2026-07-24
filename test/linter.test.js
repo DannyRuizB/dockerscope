@@ -1131,3 +1131,72 @@ test('undeclared-secret stays quiet when every secret is declared, and on interp
   const none = ['services:', '  app:', '    image: app:1.0'].join('\n');
   assert.ok(!DS.lint(DS.parseCompose(none)).findings.some((f) => f.rule === 'undeclared-secret'));
 });
+
+// --- depends-on-cycle (v0.27) ----------------------------------------------
+
+test('depends-on-cycle flags a two-service loop, once', () => {
+  const yml = [
+    'services:',
+    '  a:',
+    '    image: a:1',
+    '    depends_on: [b]',
+    '  b:',
+    '    image: b:1',
+    '    depends_on: [a]',
+  ].join('\n');
+  const found = DS.lint(DS.parseCompose(yml)).findings.filter((f) => f.rule === 'depends-on-cycle');
+  assert.equal(found.length, 1, 'reported exactly once');
+  assert.equal(found[0].service, 'a', 'on the smallest member');
+  assert.equal(found[0].level, 'error');
+  assert.match(found[0].message, /`a`, `b`/);
+});
+
+test('depends-on-cycle catches a self-dependency and a 3-node loop', () => {
+  const selfLoop = ['services:', '  a:', '    image: a:1', '    depends_on: [a]'].join('\n');
+  assert.ok(DS.lint(DS.parseCompose(selfLoop)).findings.some((f) => f.rule === 'depends-on-cycle'));
+
+  const three = [
+    'services:',
+    '  a:', '    image: a:1', '    depends_on: [b]',
+    '  b:', '    image: b:1', '    depends_on: [c]',
+    '  c:', '    image: c:1', '    depends_on: [a]',
+  ].join('\n');
+  const found = DS.lint(DS.parseCompose(three)).findings.filter((f) => f.rule === 'depends-on-cycle');
+  assert.equal(found.length, 1);
+  assert.match(found[0].message, /`a`, `b`, `c`/);
+});
+
+test('depends-on-cycle stays quiet on a plain chain (no loop)', () => {
+  const yml = [
+    'services:',
+    '  a:', '    image: a:1', '    depends_on: [b]',
+    '  b:', '    image: b:1', '    depends_on: [c]',
+    '  c:', '    image: c:1',
+  ].join('\n');
+  assert.ok(!DS.lint(DS.parseCompose(yml)).findings.some((f) => f.rule === 'depends-on-cycle'));
+});
+
+test('depends-on-cycle ignores edges to nonexistent services (that is depends-on-unknown)', () => {
+  const yml = [
+    'services:',
+    '  a:', '    image: a:1', '    depends_on: [ghost]',
+  ].join('\n');
+  const findings = DS.lint(DS.parseCompose(yml)).findings;
+  assert.ok(!findings.some((f) => f.rule === 'depends-on-cycle'));
+  assert.ok(findings.some((f) => f.rule === 'depends-on-unknown'));
+});
+
+test('depends-on-cycle reports each independent cycle separately', () => {
+  const yml = [
+    'services:',
+    '  a:', '    image: a:1', '    depends_on: [b]',
+    '  b:', '    image: b:1', '    depends_on: [a]',
+    '  x:', '    image: x:1', '    depends_on: [y]',
+    '  y:', '    image: y:1', '    depends_on: [x]',
+  ].join('\n');
+  const found = DS.lint(DS.parseCompose(yml)).findings.filter((f) => f.rule === 'depends-on-cycle');
+  assert.equal(found.length, 2);
+  // JSON.stringify, not deepEqual: the findings come from the vm sandbox, so
+  // their arrays fail deepStrictEqual's cross-realm prototype check.
+  assert.equal(JSON.stringify(found.map((f) => f.service).sort()), JSON.stringify(['a', 'x']));
+});

@@ -501,6 +501,48 @@ function ruleDependsOnUnknown(svc, model) {
   return findings;
 }
 
+// A cycle in depends_on (a → b → a, or a service depending on itself) is a
+// hard error: Compose refuses the whole file with "cyclic dependency". Easy
+// to create by accident when wiring up a new dependency without noticing the
+// return path. Reported once per cycle — on its lexicographically-smallest
+// member — since the rule runs per service. Only edges to services that
+// actually exist count (a dangling name is depends-on-unknown's job). File
+// sizes are tiny, so the reachability probe per node is fine.
+function ruleDependsOnCycle(svc, model) {
+  const names = new Set(model.services.map((s) => s.name));
+  const adj = new Map(
+    model.services.map((s) => [s.name, (s.depends_on || []).filter((d) => names.has(d))]),
+  );
+  const reachable = (start) => {
+    const seen = new Set();
+    const stack = [...(adj.get(start) || [])];
+    while (stack.length) {
+      const n = stack.pop();
+      if (seen.has(n)) continue;
+      seen.add(n);
+      for (const m of adj.get(n) || []) stack.push(m);
+    }
+    return seen;
+  };
+  // svc is in a cycle iff it can reach itself. Its cycle = the strongly
+  // connected members: nodes svc reaches that also reach svc (plus svc).
+  const forward = reachable(svc.name);
+  if (!forward.has(svc.name)) return [];
+  const members = model.services
+    .map((s) => s.name)
+    .filter((name) => name === svc.name || (forward.has(name) && reachable(name).has(svc.name)))
+    .sort();
+  if (svc.name !== members[0]) return []; // report once, on the smallest member
+  return [
+    {
+      level: "error",
+      rule: "depends-on-cycle",
+      message: `\`depends_on\` forms a cycle among ${members.map((m) => `\`${m}\``).join(", ")} — Compose refuses the whole file ("cyclic dependency").`,
+      hint: "Break the loop — one of these services must not wait on the others.",
+    },
+  ];
+}
+
 // Secrets pasted into command / entrypoint are the third door after
 // environment (env-secret) and build args (build-arg-secret): a
 // `redis-server --requirepass hunter2` shows up in `docker inspect`,
@@ -731,6 +773,7 @@ const RULES = [
   ruleContainerNameWithReplicas,
   ruleHealthcheckNoStartPeriod,
   ruleDependsOnUnknown,
+  ruleDependsOnCycle,
   ruleDependsOnIgnoresHealthcheck,
   ruleServiceHealthyNoHealthcheck,
   ruleHealthcheckTestInvalid,
