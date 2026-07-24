@@ -52,6 +52,9 @@ services:
   # shows it to anyone who can pull the resulting image.
   app:
     command: sh -c "./serve --api-token sk-live-987654"   # command-secret (error) — visible in docker inspect / ps
+    environment:
+      - LOG_LEVEL=debug
+      - LOG_LEVEL=info                                    # duplicate-env-key (warn) — the second silently wins
     depends_on:
       - db                           # depends-on-ignores-healthcheck (warn) — db has a healthcheck, short form doesn't wait for it
       - cache                        # depends-on-unknown (error) — no such service here
