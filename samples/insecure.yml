@@ -45,6 +45,8 @@ services:
       - "5432:5432"                  # port-public (warn) — on 0.0.0.0
     networks:
       - backend                      # undeclared-network (error) — no top-level networks block
+    secrets:
+      - db_root_password             # undeclared-secret (error) — no top-level secrets block
     volumes:
       - pgdata:/var/lib/postgresql/data   # undeclared-volume (error) — no top-level volumes block
 

@@ -116,6 +116,10 @@ window.DockerScope.parseCompose = function (yamlText, fileMap) {
       buildArgs: parseEnvironment(
         raw.build && typeof raw.build === "object" ? raw.build.args : null
       ),
+      // Secret names the service references (short-form list of strings or
+      // long-form `{source: name, target: ...}`). Compared against the
+      // top-level `secrets:` block by the undeclared-secret rule.
+      secrets: parseServiceSecrets(raw.secrets),
       dockerfile,
       stack: resolveStack(name, dockerfile, fileMap, warnings),
     });
@@ -139,6 +143,10 @@ window.DockerScope.parseCompose = function (yamlText, fileMap) {
   }
   const allNamedVolumes = Array.from(new Set([...topVolumes, ...usedNamed]));
 
+  const topSecrets = doc.secrets && typeof doc.secrets === "object"
+    ? Object.keys(doc.secrets)
+    : [];
+
   return {
     services,
     networks: allNetworks,
@@ -147,9 +155,24 @@ window.DockerScope.parseCompose = function (yamlText, fileMap) {
     // distinction to flag references Compose would reject as undefined.
     declaredNetworks: topNetworks,
     declaredVolumes: topVolumes,
+    declaredSecrets: topSecrets,
     warnings,
   };
 };
+
+// Secrets a service mounts: short form is a list of names, long form a list
+// of `{source, target, ...}` (only `source` names the top-level secret).
+function parseServiceSecrets(value) {
+  if (!Array.isArray(value)) return [];
+  const out = [];
+  for (const entry of value) {
+    if (typeof entry === "string") out.push(entry);
+    else if (entry && typeof entry === "object" && typeof entry.source === "string") {
+      out.push(entry.source);
+    }
+  }
+  return out;
+}
 
 function parseReplicas(raw) {
   const v = raw.deploy && typeof raw.deploy === "object" && raw.deploy.replicas != null
