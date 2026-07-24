@@ -56,6 +56,35 @@ function ruleEnvSecrets(svc) {
   return findings;
 }
 
+// List-form `environment` (and build args) can name the same key twice —
+// `["LOG_LEVEL=debug", "LOG_LEVEL=info"]` — and the LAST one silently wins.
+// Nothing errors, so the file reads one way and the container runs another;
+// the usual bite is editing one occurrence and leaving the stale twin above
+// it. Map form (`environment: {LOG_LEVEL: info}`) can't express a duplicate —
+// YAML collapses it — so this only ever fires on the list form. Reported
+// once per duplicated key, naming where the survivor sits.
+function ruleDuplicateEnvKey(svc) {
+  const findings = [];
+  for (const [field, entries] of [
+    ["environment", svc.environment],
+    ["build args", svc.buildArgs],
+  ]) {
+    if (!Array.isArray(entries)) continue;
+    const seen = new Map(); // key -> count
+    for (const { key } of entries) seen.set(key, (seen.get(key) || 0) + 1);
+    for (const [key, count] of seen) {
+      if (count < 2) continue;
+      findings.push({
+        level: "warn",
+        rule: "duplicate-env-key",
+        message: `\`${key}\` appears ${count} times in \`${field}\` — only the last value takes effect.`,
+        hint: `Remove the redundant \`${key}\` entries so the file matches what the container actually gets.`,
+      });
+    }
+  }
+  return findings;
+}
+
 // Images that almost never want to be reachable from outside the host.
 // nginx, traefik, caddy, etc. are intentionally public, so they're excluded.
 const SENSITIVE_IMAGE_PATTERN = /(postgres|mysql|mariadb|mongo|mongodb|redis|memcached|elastic|rabbitmq|kafka|etcd|cassandra|influxdb|clickhouse)/i;
@@ -657,6 +686,7 @@ function ruleUndeclaredVolume(svc, model) {
 const RULES = [
   ruleImageLatest,
   ruleEnvSecrets,
+  ruleDuplicateEnvKey,
   rulePortPublic,
   ruleNoRestart,
   ruleNoHealthcheck,

@@ -493,6 +493,7 @@ test('the insecure sample trips every security rule at once', () => {
     'depends-on-ignores-healthcheck', 'undeclared-network', 'undeclared-volume',
     'container-name-with-replicas', 'healthcheck-no-start-period',
     'service-healthy-no-healthcheck', 'healthcheck-test-invalid',
+    'duplicate-env-key',
   ]) {
     assert.ok(rules.has(r), `expected rule '${r}'`);
   }
@@ -1018,4 +1019,61 @@ test('healthcheck-test-invalid spares valid prefixes, string form and interpolat
     const found = DS.lint(DS.parseCompose(yml)).findings.filter((f) => f.rule === 'healthcheck-test-invalid');
     assert.equal(found.length, 0, `expected no finding for ${line.trim()}`);
   }
+});
+
+// --- duplicate-env-key (v0.25) ---------------------------------------------
+
+test('duplicate-env-key fires on a repeated list-form environment key', () => {
+  const yml = [
+    'services:',
+    '  app:',
+    '    image: app:1.0',
+    '    environment:',
+    '      - LOG_LEVEL=debug',
+    '      - LOG_LEVEL=info',
+    '      - PORT=8080',
+  ].join('\n');
+  const found = DS.lint(DS.parseCompose(yml)).findings.filter((f) => f.rule === 'duplicate-env-key');
+  assert.equal(found.length, 1);
+  assert.equal(found[0].level, 'warn');
+  assert.match(found[0].message, /LOG_LEVEL/);
+  assert.match(found[0].message, /2 times/);
+});
+
+test('duplicate-env-key also covers build args', () => {
+  const yml = [
+    'services:',
+    '  app:',
+    '    build:',
+    '      context: .',
+    '      args:',
+    '        - NODE_ENV=production',
+    '        - NODE_ENV=development',
+  ].join('\n');
+  const found = DS.lint(DS.parseCompose(yml)).findings.filter((f) => f.rule === 'duplicate-env-key');
+  assert.equal(found.length, 1);
+  assert.match(found[0].message, /build args/);
+});
+
+test('duplicate-env-key stays quiet on map form and on unique keys', () => {
+  // Map form: YAML collapses duplicates, so there is nothing to flag.
+  const mapForm = [
+    'services:',
+    '  app:',
+    '    image: app:1.0',
+    '    environment:',
+    '      LOG_LEVEL: info',
+    '      PORT: "8080"',
+  ].join('\n');
+  assert.ok(!DS.lint(DS.parseCompose(mapForm)).findings.some((f) => f.rule === 'duplicate-env-key'));
+
+  const unique = [
+    'services:',
+    '  app:',
+    '    image: app:1.0',
+    '    environment:',
+    '      - LOG_LEVEL=info',
+    '      - PORT=8080',
+  ].join('\n');
+  assert.ok(!DS.lint(DS.parseCompose(unique)).findings.some((f) => f.rule === 'duplicate-env-key'));
 });
