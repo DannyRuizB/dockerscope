@@ -555,6 +555,63 @@ function ruleDependsOnIgnoresHealthcheck(svc, model) {
   return findings;
 }
 
+// `disable: true` and `test: ["NONE"]` / `test: NONE` all mean "this service
+// reports no health" — relevant to anyone waiting on service_healthy.
+function healthcheckDisabled(hc) {
+  if (hc.disable === true) return true;
+  const test = hc.test;
+  if (typeof test === "string") return test.trim().toUpperCase() === "NONE";
+  if (Array.isArray(test)) return String(test[0] || "").trim().toUpperCase() === "NONE";
+  return false;
+}
+
+// The mirror image of depends-on-ignores-healthcheck: `condition:
+// service_healthy` waits for a health signal the dependency will never send.
+// Without a healthcheck (or with it disabled) Compose refuses to start the
+// dependent at all — 'dependency "db" has no healthcheck configured' — so
+// this is a startup failure written down, not a style nit. Unknown targets
+// stay quiet: depends-on-unknown already owns that finding.
+function ruleServiceHealthyNoHealthcheck(svc, model) {
+  const byName = new Map(model.services.map((s) => [s.name, s]));
+  const findings = [];
+  for (const [dep, cond] of Object.entries(svc.dependsOnConditions || {})) {
+    if (cond !== "service_healthy") continue;
+    const target = byName.get(dep);
+    if (!target) continue;
+    if (target.healthcheck && !healthcheckDisabled(target.healthcheck)) continue;
+    const why = target.healthcheck ? "disables its healthcheck" : "has no healthcheck";
+    findings.push({
+      level: "error",
+      rule: "service-healthy-no-healthcheck",
+      message: `\`depends_on: { ${dep}: { condition: service_healthy } }\` — but \`${dep}\` ${why}, so the condition can never be met and Compose refuses to start this service.`,
+      hint: `Give \`${dep}\` a healthcheck, or relax the condition to \`service_started\`.`,
+    });
+  }
+  return findings;
+}
+
+// healthcheck.test in list form must start with CMD, CMD-SHELL or NONE.
+// `test: ["curl", "-f", …]` looks perfectly plausible — and Compose refuses
+// the whole file. Joins the file-rejecting family (depends-on-unknown,
+// undeclared-network/volume, container-name-with-replicas). Interpolated
+// first items are skipped: the value comes from outside the file.
+function ruleHealthcheckTestInvalid(svc) {
+  const hc = svc.healthcheck;
+  if (!hc || !Array.isArray(hc.test) || hc.test.length === 0) return [];
+  const first = String(hc.test[0] ?? "").trim();
+  if (first.includes("${")) return [];
+  const keyword = first.toUpperCase();
+  if (keyword === "CMD" || keyword === "CMD-SHELL" || keyword === "NONE") return [];
+  return [
+    {
+      level: "error",
+      rule: "healthcheck-test-invalid",
+      message: `\`healthcheck.test\` list starts with \`${first}\` — the first item must be \`CMD\`, \`CMD-SHELL\` or \`NONE\`, and Compose refuses the whole file otherwise.`,
+      hint: `Use \`test: ["CMD", "${first}", …]\` (exec form) or a plain string for shell form.`,
+    },
+  ];
+}
+
 // A service can only attach to networks declared in the top-level `networks:`
 // block: Compose refuses the whole file otherwise ("service ... refers to
 // undefined network"). The implicit `default` network is exempt — every file
@@ -623,6 +680,8 @@ const RULES = [
   ruleHealthcheckNoStartPeriod,
   ruleDependsOnUnknown,
   ruleDependsOnIgnoresHealthcheck,
+  ruleServiceHealthyNoHealthcheck,
+  ruleHealthcheckTestInvalid,
   ruleUndeclaredNetwork,
   ruleUndeclaredVolume,
 ];

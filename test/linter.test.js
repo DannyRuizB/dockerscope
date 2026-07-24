@@ -492,6 +492,7 @@ test('the insecure sample trips every security rule at once', () => {
     'port-conflict', 'duplicate-container-name', 'depends-on-unknown',
     'depends-on-ignores-healthcheck', 'undeclared-network', 'undeclared-volume',
     'container-name-with-replicas', 'healthcheck-no-start-period',
+    'service-healthy-no-healthcheck', 'healthcheck-test-invalid',
   ]) {
     assert.ok(rules.has(r), `expected rule '${r}'`);
   }
@@ -922,4 +923,99 @@ test('parser surfaces logDriver and logMaxSize', () => {
   assert.equal(by.a.logMaxSize, '5m');
   assert.equal(by.b.logDriver, null);
   assert.equal(by.b.logMaxSize, null);
+});
+
+// --- service-healthy-no-healthcheck + healthcheck-test-invalid (v0.24) ------
+
+test('service_healthy against a target with no healthcheck is an error', () => {
+  const yml = [
+    'services:',
+    '  app:',
+    '    image: app:1.0',
+    '    depends_on:',
+    '      db:',
+    '        condition: service_healthy',
+    '  db:',
+    '    image: postgres:16',
+  ].join('\n');
+  const found = DS.lint(DS.parseCompose(yml)).findings.filter((f) => f.rule === 'service-healthy-no-healthcheck');
+  assert.equal(found.length, 1);
+  assert.equal(found[0].level, 'error');
+  assert.match(found[0].message, /has no healthcheck/);
+});
+
+test('service_healthy against a DISABLED healthcheck also fires', () => {
+  for (const hc of ['      disable: true', '      test: ["NONE"]', '      test: NONE']) {
+    const yml = [
+      'services:',
+      '  app:',
+      '    image: app:1.0',
+      '    depends_on:',
+      '      db:',
+      '        condition: service_healthy',
+      '  db:',
+      '    image: postgres:16',
+      '    healthcheck:',
+      hc,
+    ].join('\n');
+    const found = DS.lint(DS.parseCompose(yml)).findings.filter((f) => f.rule === 'service-healthy-no-healthcheck');
+    assert.equal(found.length, 1, `expected a finding with healthcheck ${hc.trim()}`);
+    assert.match(found[0].message, /disables its healthcheck/);
+  }
+});
+
+test('service_healthy with a real healthcheck, other conditions and unknown targets stay quiet', () => {
+  const yml = [
+    'services:',
+    '  app:',
+    '    image: app:1.0',
+    '    depends_on:',
+    '      db:',
+    '        condition: service_healthy',
+    '      worker:',
+    '        condition: service_started',
+    '      ghost:',
+    '        condition: service_healthy',
+    '  db:',
+    '    image: postgres:16',
+    '    healthcheck:',
+    '      test: ["CMD-SHELL", "pg_isready"]',
+    '      start_period: 10s',
+    '  worker:',
+    '    image: worker:1.0',
+  ].join('\n');
+  const findings = DS.lint(DS.parseCompose(yml)).findings;
+  // ghost is depends-on-unknown's job, not this rule's.
+  assert.ok(!findings.some((f) => f.rule === 'service-healthy-no-healthcheck'));
+  assert.ok(findings.some((f) => f.rule === 'depends-on-unknown'));
+});
+
+test('healthcheck-test-invalid fires on a list without CMD / CMD-SHELL / NONE', () => {
+  const yml = [
+    'services:',
+    '  web:',
+    '    image: nginx:1.27',
+    '    healthcheck:',
+    '      test: ["curl", "-f", "http://localhost/health"]',
+  ].join('\n');
+  const found = DS.lint(DS.parseCompose(yml)).findings.filter((f) => f.rule === 'healthcheck-test-invalid');
+  assert.equal(found.length, 1);
+  assert.equal(found[0].level, 'error');
+  assert.match(found[0].message, /curl/);
+});
+
+test('healthcheck-test-invalid spares valid prefixes, string form and interpolations', () => {
+  const cases = [
+    '      test: ["CMD", "curl", "-f", "http://localhost"]',
+    '      test: ["CMD-SHELL", "curl -f http://localhost"]',
+    '      test: ["cmd-shell", "curl -f http://localhost"]',
+    '      test: ["NONE"]',
+    '      test: curl -f http://localhost',
+    '      test: ["${HC_PREFIX}", "curl"]',
+  ];
+  for (const line of cases) {
+    const yml = ['services:', '  web:', '    image: nginx:1.27', '    healthcheck:', line].join('\n');
+    const found = DS.lint(DS.parseCompose(yml)).findings.filter((f) => f.rule === 'healthcheck-test-invalid');
+    assert.equal(found.length, 0, `expected no finding for ${line.trim()}`);
+  }
 });
