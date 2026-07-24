@@ -493,7 +493,7 @@ test('the insecure sample trips every security rule at once', () => {
     'depends-on-ignores-healthcheck', 'undeclared-network', 'undeclared-volume',
     'container-name-with-replicas', 'healthcheck-no-start-period',
     'service-healthy-no-healthcheck', 'healthcheck-test-invalid',
-    'duplicate-env-key',
+    'duplicate-env-key', 'undeclared-secret',
   ]) {
     assert.ok(rules.has(r), `expected rule '${r}'`);
   }
@@ -1076,4 +1076,58 @@ test('duplicate-env-key stays quiet on map form and on unique keys', () => {
     '      - PORT=8080',
   ].join('\n');
   assert.ok(!DS.lint(DS.parseCompose(unique)).findings.some((f) => f.rule === 'duplicate-env-key'));
+});
+
+// --- undeclared-secret (v0.26) ---------------------------------------------
+
+test('undeclared-secret flags a service secret missing from the top-level block', () => {
+  const yml = [
+    'services:',
+    '  db:',
+    '    image: postgres:16',
+    '    secrets:',
+    '      - db_password',
+    '      - api_key',
+    'secrets:',
+    '  db_password:',
+    '    file: ./db_password.txt',
+  ].join('\n');
+  const found = DS.lint(DS.parseCompose(yml)).findings.filter((f) => f.rule === 'undeclared-secret');
+  // db_password is declared; api_key is not.
+  assert.equal(found.length, 1);
+  assert.equal(found[0].level, 'error');
+  assert.match(found[0].message, /api_key/);
+});
+
+test('undeclared-secret handles long-form secret entries (source:)', () => {
+  const yml = [
+    'services:',
+    '  app:',
+    '    image: app:1.0',
+    '    secrets:',
+    '      - source: tls_key',
+    '        target: /run/secrets/tls',
+  ].join('\n');
+  const found = DS.lint(DS.parseCompose(yml)).findings.filter((f) => f.rule === 'undeclared-secret');
+  assert.equal(found.length, 1);
+  assert.match(found[0].message, /tls_key/);
+});
+
+test('undeclared-secret stays quiet when every secret is declared, and on interpolation', () => {
+  const declared = [
+    'services:',
+    '  app:',
+    '    image: app:1.0',
+    '    secrets:',
+    '      - db_password',
+    '      - ${DYNAMIC_SECRET}',
+    'secrets:',
+    '  db_password:',
+    '    external: true',
+  ].join('\n');
+  assert.ok(!DS.lint(DS.parseCompose(declared)).findings.some((f) => f.rule === 'undeclared-secret'));
+
+  // No secrets at all → nothing to flag.
+  const none = ['services:', '  app:', '    image: app:1.0'].join('\n');
+  assert.ok(!DS.lint(DS.parseCompose(none)).findings.some((f) => f.rule === 'undeclared-secret'));
 });

@@ -683,6 +683,28 @@ function ruleUndeclaredVolume(svc, model) {
   return findings;
 }
 
+// A service can only mount a secret declared in the top-level `secrets:`
+// block — Compose refuses the whole file otherwise ("service ... refers to
+// undefined secret ..."). The classic bite: the top-level block is renamed
+// or dropped in a merge and the service's reference is left dangling.
+// Joins the file-rejecting family (undeclared-network/volume,
+// depends-on-unknown). Interpolated names are skipped (value from outside).
+function ruleUndeclaredSecret(svc, model) {
+  const declared = new Set(model.declaredSecrets || []);
+  const findings = [];
+  for (const s of svc.secrets) {
+    if (declared.has(s)) continue;
+    if (String(s).includes("${")) continue;
+    findings.push({
+      level: "error",
+      rule: "undeclared-secret",
+      message: `references secret \`${s}\`, which is not declared in the top-level \`secrets:\` block — Compose refuses the whole file.`,
+      hint: `Declare it (\`secrets: { ${s}: { file: ./${s}.txt } }\`, or \`external: true\` if it already exists) or fix the name.`,
+    });
+  }
+  return findings;
+}
+
 const RULES = [
   ruleImageLatest,
   ruleEnvSecrets,
@@ -714,6 +736,7 @@ const RULES = [
   ruleHealthcheckTestInvalid,
   ruleUndeclaredNetwork,
   ruleUndeclaredVolume,
+  ruleUndeclaredSecret,
 ];
 
 window.DockerScope.lint = function (model) {
