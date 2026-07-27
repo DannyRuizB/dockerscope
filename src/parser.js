@@ -93,6 +93,9 @@ window.DockerScope.parseCompose = function (yamlText, fileMap) {
       // PID cap: modern `deploy.resources.limits.pids` (integer), falling
       // back to the legacy service-level `pids_limit`.
       pidsLimit: parsePidsLimit(raw),
+      // CPU cap: modern `deploy.resources.limits.cpus`, falling back to the
+      // service-level `cpus` shorthand or the low-level `cpu_quota`.
+      cpuLimit: parseCpuLimit(raw),
       // Log rotation: the driver name (null = compose default, json-file)
       // and the max-size option, if any — what no-log-limit judges.
       logDriver: parseLogDriver(raw),
@@ -207,6 +210,22 @@ function parsePidsLimit(raw) {
   const v = limits && limits.pids != null ? limits.pids : raw.pids_limit;
   if (typeof v === "number" && Number.isFinite(v)) return v;
   if (typeof v === "string" && /^\d+$/.test(v.trim())) return Number(v.trim());
+  return null;
+}
+
+// `cpu_shares` deliberately does NOT count as a cap — it's a relative
+// weight that only bites under contention; an uncontended container still
+// eats every core.
+function parseCpuLimit(raw) {
+  const deploy = raw.deploy && typeof raw.deploy === "object" ? raw.deploy : null;
+  const resources = deploy && deploy.resources && typeof deploy.resources === "object"
+    ? deploy.resources : null;
+  const limits = resources && resources.limits && typeof resources.limits === "object"
+    ? resources.limits : null;
+  const v = limits && limits.cpus != null ? limits.cpus
+    : (raw.cpus != null ? raw.cpus : raw.cpu_quota);
+  if (typeof v === "string" && v.trim() !== "") return v.trim();
+  if (typeof v === "number" && Number.isFinite(v)) return String(v);
   return null;
 }
 

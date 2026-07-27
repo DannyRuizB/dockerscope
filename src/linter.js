@@ -130,6 +130,22 @@ function ruleNoMemoryLimit(svc) {
   }];
 }
 
+// A service with no CPU cap can pin every core on the host: a busy loop (a
+// runaway retry storm, a crypto-miner in a compromised image) starves the
+// other containers and the daemon itself. Completes the resource-caps
+// quartet — memory kills by OOM, PIDs by table exhaustion, logs by disk,
+// CPU starves. `deploy.resources.limits.cpus`, the `cpus:` shorthand or
+// `cpu_quota` count as capped; `cpu_shares` does not (a weight, not a cap).
+function ruleNoCpuLimit(svc) {
+  if (svc.cpuLimit != null) return [];
+  return [{
+    level: "warn",
+    rule: "no-cpu-limit",
+    message: "no CPU limit set.",
+    hint: "Add `deploy.resources.limits.cpus: \"0.50\"` (or the `cpus:` shorthand) so a busy loop can't pin every core on the host.",
+  }];
+}
+
 // A container with no PID cap can fill the host's process table: a fork bomb
 // (or a runaway worker pool) starves every process on the machine, including
 // the ones you'd use to fix it. Either spelling counts as capped:
@@ -756,6 +772,7 @@ const RULES = [
   ruleNoHealthcheck,
   ruleNoMemoryLimit,
   ruleNoPidsLimit,
+  ruleNoCpuLimit,
   ruleNoLogLimit,
   ruleDockerSocket,
   rulePrivileged,
