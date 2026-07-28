@@ -130,6 +130,22 @@ function ruleNoMemoryLimit(svc) {
   }];
 }
 
+// A service with no CPU cap can pin every core on the host: a busy loop (a
+// runaway retry storm, a crypto-miner in a compromised image) starves the
+// other containers and the daemon itself. Completes the resource-caps
+// quartet — memory kills by OOM, PIDs by table exhaustion, logs by disk,
+// CPU starves. `deploy.resources.limits.cpus`, the `cpus:` shorthand or
+// `cpu_quota` count as capped; `cpu_shares` does not (a weight, not a cap).
+function ruleNoCpuLimit(svc) {
+  if (svc.cpuLimit != null) return [];
+  return [{
+    level: "warn",
+    rule: "no-cpu-limit",
+    message: "no CPU limit set.",
+    hint: "Add `deploy.resources.limits.cpus: \"0.50\"` (or the `cpus:` shorthand) so a busy loop can't pin every core on the host.",
+  }];
+}
+
 // A container with no PID cap can fill the host's process table: a fork bomb
 // (or a runaway worker pool) starves every process on the machine, including
 // the ones you'd use to fix it. Either spelling counts as capped:
@@ -227,6 +243,26 @@ function ruleHostNamespace(svc) {
     });
   }
   return findings;
+}
+
+// With host networking the container shares the host's network stack, so
+// there is nothing to map — the engine silently DISCARDS every `ports:`
+// entry ("WARNING: Published ports are discarded when using host network
+// mode", verified against a real daemon; compose runs never surface it).
+// The mappings in the file are a lie either way: the service listens on
+// whatever ports the process binds, not the ones written here, and a reader
+// (or a firewall review) trusting the list is misled. Same silent-no-op
+// family as duplicate-env-key.
+function rulePortsWithHostNetwork(svc) {
+  if (svc.networkMode !== "host") return [];
+  const n = (svc.ports || []).length;
+  if (n === 0) return [];
+  return [{
+    level: "warn",
+    rule: "ports-with-host-network",
+    message: `declares ${n} port mapping${n === 1 ? "" : "s"} under \`network_mode: host\` — Docker silently discards them.`,
+    hint: "With host networking the process binds host ports directly, so the `ports:` block does nothing. Remove it, or drop `network_mode: host` and keep the mappings.",
+  }];
 }
 
 // Capabilities that, added back, largely defeat the point of dropping root.
@@ -756,10 +792,12 @@ const RULES = [
   ruleNoHealthcheck,
   ruleNoMemoryLimit,
   ruleNoPidsLimit,
+  ruleNoCpuLimit,
   ruleNoLogLimit,
   ruleDockerSocket,
   rulePrivileged,
   ruleHostNamespace,
+  rulePortsWithHostNetwork,
   ruleDangerousCaps,
   ruleSensitiveHostMount,
   ruleNoNewPrivileges,
