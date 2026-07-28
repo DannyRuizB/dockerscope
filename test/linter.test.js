@@ -83,6 +83,7 @@ test('a fully-specified service produces no findings', () => {
     '        limits:',
     '          memory: 512M',
     '          pids: 256',
+    "          cpus: '0.50'",
   ].join('\n');
   const { findings } = DS.lint(DS.parseCompose(yaml));
   assert.equal(findings.filter((f) => f.service === 'ok').length, 0);
@@ -493,7 +494,7 @@ test('the insecure sample trips every security rule at once', () => {
     'depends-on-ignores-healthcheck', 'undeclared-network', 'undeclared-volume',
     'container-name-with-replicas', 'healthcheck-no-start-period',
     'service-healthy-no-healthcheck', 'healthcheck-test-invalid',
-    'duplicate-env-key', 'undeclared-secret',
+    'duplicate-env-key', 'undeclared-secret', 'ports-with-host-network',
   ]) {
     assert.ok(rules.has(r), `expected rule '${r}'`);
   }
@@ -1199,4 +1200,104 @@ test('depends-on-cycle reports each independent cycle separately', () => {
   // JSON.stringify, not deepEqual: the findings come from the vm sandbox, so
   // their arrays fail deepStrictEqual's cross-realm prototype check.
   assert.equal(JSON.stringify(found.map((f) => f.service).sort()), JSON.stringify(['a', 'x']));
+});
+
+// --- no-cpu-limit (v0.28) ---------------------------------------------------
+
+test('no-cpu-limit fires on an uncapped service', () => {
+  const compose = [
+    'services:',
+    '  spinner:',
+    '    image: nginx:1.27',
+  ].join('\n');
+  const { findings } = DS.lint(DS.parseCompose(compose));
+  const hits = findings.filter((f) => f.rule === 'no-cpu-limit');
+  assert.equal(hits.length, 1);
+  assert.equal(hits[0].service, 'spinner');
+  assert.equal(hits[0].level, 'warn');
+});
+
+test('no-cpu-limit accepts the deploy form, the cpus shorthand and cpu_quota', () => {
+  const compose = [
+    'services:',
+    '  modern:',
+    '    image: nginx:1.27',
+    '    deploy:',
+    '      resources:',
+    '        limits:',
+    "          cpus: '0.50'",
+    '  shorthand:',
+    '    image: redis:7.4',
+    '    cpus: 1.5',
+    '  lowlevel:',
+    '    image: postgres:17',
+    '    cpu_quota: 50000',
+  ].join('\n');
+  const { findings } = DS.lint(DS.parseCompose(compose));
+  assert.ok(!findings.some((f) => f.rule === 'no-cpu-limit'));
+});
+
+test('no-cpu-limit does not count cpu_shares as a cap (a weight, not a limit)', () => {
+  const compose = [
+    'services:',
+    '  weighted:',
+    '    image: nginx:1.27',
+    '    cpu_shares: 512',
+  ].join('\n');
+  const { findings } = DS.lint(DS.parseCompose(compose));
+  assert.ok(findings.some((f) => f.rule === 'no-cpu-limit'));
+});
+
+// --- ports-with-host-network (v0.29) -----------------------------------------
+
+test('ports-with-host-network fires when host networking meets a ports block', () => {
+  const compose = [
+    'services:',
+    '  agent:',
+    '    image: prom/node-exporter:v1.8.2',
+    '    network_mode: host',
+    '    ports:',
+    '      - "9100:9100"',
+    '      - "9101:9101"',
+  ].join('\n');
+  const { findings } = DS.lint(DS.parseCompose(compose));
+  const hits = findings.filter((f) => f.rule === 'ports-with-host-network');
+  assert.equal(hits.length, 1, 'one finding per service, not per mapping');
+  assert.equal(hits[0].service, 'agent');
+  assert.equal(hits[0].level, 'warn');
+  assert.match(hits[0].message, /2 port mappings/);
+});
+
+test('ports-with-host-network stays quiet without ports, or without host networking', () => {
+  const hostNoPorts = [
+    'services:',
+    '  agent:',
+    '    image: prom/node-exporter:v1.8.2',
+    '    network_mode: host',
+  ].join('\n');
+  assert.ok(!DS.lint(DS.parseCompose(hostNoPorts)).findings.some((f) => f.rule === 'ports-with-host-network'));
+
+  const portsNoHost = [
+    'services:',
+    '  web:',
+    '    image: nginx:1.27',
+    '    ports:',
+    '      - "80:80"',
+  ].join('\n');
+  assert.ok(!DS.lint(DS.parseCompose(portsNoHost)).findings.some((f) => f.rule === 'ports-with-host-network'));
+});
+
+test('ports-with-host-network ignores other network_mode values (bridge, service:, container:)', () => {
+  const compose = [
+    'services:',
+    '  sidecar:',
+    '    image: nginx:1.27',
+    '    network_mode: service:web',
+    '    ports:',
+    '      - "8080:8080"',
+    '  web:',
+    '    image: nginx:1.27',
+  ].join('\n');
+  const { findings } = DS.lint(DS.parseCompose(compose));
+  assert.ok(!findings.some((f) => f.rule === 'ports-with-host-network'));
 });
