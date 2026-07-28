@@ -21,6 +21,8 @@ services:
     container_name: edge             # duplicate-container-name (error) — proxy already claims it
     privileged: true                 # privileged (error)
     network_mode: host               # host-namespace
+    ports:
+      - "9100:9100"                  # ports-with-host-network (warn) — silently discarded under host networking
     pid: host                        # host-namespace
     cap_add:                         # no-new-privileges (warn) — caps without the security_opt
       - SYS_ADMIN                    # dangerous-cap (error)

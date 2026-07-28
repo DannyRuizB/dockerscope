@@ -245,6 +245,26 @@ function ruleHostNamespace(svc) {
   return findings;
 }
 
+// With host networking the container shares the host's network stack, so
+// there is nothing to map — the engine silently DISCARDS every `ports:`
+// entry ("WARNING: Published ports are discarded when using host network
+// mode", verified against a real daemon; compose runs never surface it).
+// The mappings in the file are a lie either way: the service listens on
+// whatever ports the process binds, not the ones written here, and a reader
+// (or a firewall review) trusting the list is misled. Same silent-no-op
+// family as duplicate-env-key.
+function rulePortsWithHostNetwork(svc) {
+  if (svc.networkMode !== "host") return [];
+  const n = (svc.ports || []).length;
+  if (n === 0) return [];
+  return [{
+    level: "warn",
+    rule: "ports-with-host-network",
+    message: `declares ${n} port mapping${n === 1 ? "" : "s"} under \`network_mode: host\` — Docker silently discards them.`,
+    hint: "With host networking the process binds host ports directly, so the `ports:` block does nothing. Remove it, or drop `network_mode: host` and keep the mappings.",
+  }];
+}
+
 // Capabilities that, added back, largely defeat the point of dropping root.
 const DANGEROUS_CAPS = new Set([
   "SYS_ADMIN", "NET_ADMIN", "SYS_PTRACE", "SYS_MODULE",
@@ -777,6 +797,7 @@ const RULES = [
   ruleDockerSocket,
   rulePrivileged,
   ruleHostNamespace,
+  rulePortsWithHostNetwork,
   ruleDangerousCaps,
   ruleSensitiveHostMount,
   ruleNoNewPrivileges,
