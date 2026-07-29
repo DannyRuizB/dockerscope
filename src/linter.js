@@ -224,6 +224,26 @@ function rulePrivileged(svc) {
   }];
 }
 
+// An explicit `user: root` is worse than saying nothing: compose's `user:`
+// OVERRIDES the image's own USER directive, so an image that ships a
+// deliberate privilege drop (postgres, node, nginx-unprivileged…) gets root
+// handed back by one line of YAML. Absence stays quiet on purpose — without
+// pulling the image we can't know its USER, and flagging every service would
+// be noise; an explicit root is the one case the file itself proves. A root
+// *group* alone ("1000:0", the OpenShift arbitrary-uid pattern) is not root
+// and does not fire; interpolations (`user: ${APP_UID}`) never match.
+function ruleExplicitRootUser(svc) {
+  if (svc.user == null) return [];
+  const uid = String(svc.user).split(":")[0].trim();
+  if (uid !== "root" && !/^0+$/.test(uid)) return [];
+  return [{
+    level: "warn",
+    rule: "explicit-root-user",
+    message: `\`user: ${svc.user}\` runs the service as root — overriding any privilege drop the image ships.`,
+    hint: "Drop the line to keep the image's own USER, or set a non-root uid:gid (e.g. `1000:1000`).",
+  }];
+}
+
 // Sharing the host's network / PID / IPC namespace removes the isolation that
 // makes a container a container.
 function ruleHostNamespace(svc) {
@@ -796,6 +816,7 @@ const RULES = [
   ruleNoLogLimit,
   ruleDockerSocket,
   rulePrivileged,
+  ruleExplicitRootUser,
   ruleHostNamespace,
   rulePortsWithHostNetwork,
   ruleDangerousCaps,

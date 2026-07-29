@@ -20,6 +20,7 @@ services:
     image: monitoring-agent:latest
     container_name: edge             # duplicate-container-name (error) — proxy already claims it
     privileged: true                 # privileged (error)
+    user: root                       # explicit-root-user (warn) — overrides any USER the image drops to
     network_mode: host               # host-namespace
     ports:
       - "9100:9100"                  # ports-with-host-network (warn) — silently discarded under host networking
