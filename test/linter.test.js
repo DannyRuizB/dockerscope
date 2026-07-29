@@ -112,6 +112,51 @@ test('privileged mode is flagged as an error', () => {
   assert.ok(findings.some((f) => f.rule === 'privileged' && f.level === 'error'));
 });
 
+test('explicit-root-user flags root in every spelling', () => {
+  // string "root", bare numeric 0 (YAML unquoted), and "0:0" all resolve to
+  // uid 0 — each fires once, as a warn.
+  const yaml = [
+    'services:',
+    '  a:',
+    '    image: alpine:3.20',
+    '    user: root',
+    '  b:',
+    '    image: alpine:3.20',
+    '    user: 0',
+    '  c:',
+    '    image: alpine:3.20',
+    '    user: "0:0"',
+  ].join('\n');
+  const hits = DS.lint(DS.parseCompose(yaml)).findings.filter((f) => f.rule === 'explicit-root-user');
+  assert.equal(hits.length, 3);
+  assert.ok(hits.every((f) => f.level === 'warn'));
+});
+
+test('explicit-root-user spares non-root users, the root group alone, and interpolations', () => {
+  // "1000:0" is the OpenShift arbitrary-uid pattern (root GROUP, not root),
+  // and ${APP_UID} comes from outside the file — neither is provably root.
+  // A service with no user: line stays quiet too (the image's USER is unknown).
+  const yaml = [
+    'services:',
+    '  a:',
+    '    image: alpine:3.20',
+    '    user: "1000:1000"',
+    '  b:',
+    '    image: alpine:3.20',
+    '    user: node',
+    '  c:',
+    '    image: alpine:3.20',
+    '    user: "1000:0"',
+    '  d:',
+    '    image: alpine:3.20',
+    '    user: ${APP_UID}',
+    '  e:',
+    '    image: alpine:3.20',
+  ].join('\n');
+  const hits = DS.lint(DS.parseCompose(yaml)).findings.filter((f) => f.rule === 'explicit-root-user');
+  assert.equal(hits.length, 0);
+});
+
 test('host namespaces (network_mode / pid / ipc: host) are flagged', () => {
   const yaml = [
     'services:',
@@ -495,6 +540,7 @@ test('the insecure sample trips every security rule at once', () => {
     'container-name-with-replicas', 'healthcheck-no-start-period',
     'service-healthy-no-healthcheck', 'healthcheck-test-invalid',
     'duplicate-env-key', 'undeclared-secret', 'ports-with-host-network',
+    'explicit-root-user',
   ]) {
     assert.ok(rules.has(r), `expected rule '${r}'`);
   }

@@ -104,6 +104,12 @@ window.DockerScope.parseCompose = function (yamlText, fileMap) {
       volumes: parseVolumes(raw.volumes, topVolumeSet, warnings, name),
       privileged: raw.privileged === true,
       readOnly: raw.read_only === true,
+      // `user:` accepts a string ("root", "1000:1000", "www-data") or a bare
+      // number (uid). Normalized to a string; null when absent — the linter
+      // only judges an explicit value, never guesses the image's USER.
+      user: typeof raw.user === "string" || typeof raw.user === "number"
+        ? String(raw.user)
+        : null,
       capAdd: parseCapAdd(raw.cap_add),
       capDrop: parseCapAdd(raw.cap_drop),
       networkMode: typeof raw.network_mode === "string" ? raw.network_mode : null,
