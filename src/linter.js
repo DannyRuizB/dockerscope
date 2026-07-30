@@ -265,6 +265,38 @@ function ruleHostNamespace(svc) {
   return findings;
 }
 
+// Two mounts onto one container path never deploy: the daemon refuses to
+// create the container ("Duplicate mount point") — verified against a real
+// daemon; volume+volume, bind+volume and tmpfs+volume all die, and a
+// trailing slash does not make two paths different. The usual sources are a
+// copy-pasted volumes list, the same target spelled once in short and once
+// in long syntax, or a `tmpfs:` entry colliding with a volume. File-killing
+// family with port-conflict and friends — except this one needs no second
+// service, one service kills itself.
+function ruleDuplicateMountTarget(svc) {
+  const findings = [];
+  const seen = new Set();
+  const targets = [
+    ...(svc.volumes || []).map(v => v.target),
+    ...(svc.tmpfs || []),
+  ];
+  for (const target of targets) {
+    if (!target || typeof target !== "string") continue;
+    const norm = target.replace(/\/+$/, "") || "/";
+    if (seen.has(norm)) {
+      findings.push({
+        level: "error",
+        rule: "duplicate-mount-target",
+        message: `mounts \`${target}\` twice — the daemon refuses to create the container ("Duplicate mount point").`,
+        hint: "Keep one mount per container path: merge the duplicated volumes / tmpfs entries and delete the rest.",
+      });
+    } else {
+      seen.add(norm);
+    }
+  }
+  return findings;
+}
+
 // With host networking the container shares the host's network stack, so
 // there is nothing to map — the engine silently DISCARDS every `ports:`
 // entry ("WARNING: Published ports are discarded when using host network
@@ -828,6 +860,7 @@ const RULES = [
   ruleBuildArgSecret,
   ruleCommandSecret,
   rulePortConflict,
+  ruleDuplicateMountTarget,
   ruleDuplicateContainerName,
   ruleContainerNameWithReplicas,
   ruleHealthcheckNoStartPeriod,

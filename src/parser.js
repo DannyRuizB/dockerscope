@@ -8,6 +8,7 @@
 //     restart: string|null,
 //     healthcheck: object|null,
 //     volumes: [{type, source, target, readonly}],  // type: "named" | "bind" | "anonymous"
+//     tmpfs: [string],               // service-level `tmpfs:` targets (options stripped)
 //     privileged: boolean,
 //     capAdd: [string],               // upper-cased Linux capabilities from cap_add
 //     networkMode: string|null,       // e.g. "host"
@@ -102,6 +103,10 @@ window.DockerScope.parseCompose = function (yamlText, fileMap) {
       logMaxSize: parseLogMaxSize(raw),
       healthcheck: raw.healthcheck && typeof raw.healthcheck === "object" ? raw.healthcheck : null,
       volumes: parseVolumes(raw.volumes, topVolumeSet, warnings, name),
+      // Service-level `tmpfs:` (a string or a list of "/path[:opts]") —
+      // distinct from volumes long-form `type: tmpfs`. Only the target
+      // paths are kept; mount options play no part in the rules.
+      tmpfs: parseTmpfs(raw.tmpfs),
       privileged: raw.privileged === true,
       readOnly: raw.read_only === true,
       // `user:` accepts a string ("root", "1000:1000", "www-data") or a bare
@@ -425,6 +430,19 @@ function parseSingleVolume(entry, _topVolumeSet) {
 function isHostPath(s) {
   if (!s) return false;
   return s.startsWith(".") || s.startsWith("/") || s.startsWith("~") || /^[a-zA-Z]:[/\\]/.test(s);
+}
+
+// Service-level `tmpfs:` accepts a single string or a list; each entry is
+// "/path" or "/path:opts". Returns the target paths, options dropped.
+function parseTmpfs(value) {
+  const entries = typeof value === "string" ? [value] : Array.isArray(value) ? value : [];
+  const out = [];
+  for (const e of entries) {
+    if (typeof e !== "string") continue;
+    const target = e.split(":")[0].trim();
+    if (target) out.push(target);
+  }
+  return out;
 }
 
 // Resolves `extends` for a single service, recursively. Returns the merged

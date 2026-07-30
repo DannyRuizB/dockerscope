@@ -117,6 +117,28 @@ test('parseCompose throws a clear error on invalid YAML', () => {
   assert.match(err.message, /YAML parse error/);
 });
 
+test('parseCompose normalizes tmpfs to target paths: string or list, options stripped', () => {
+  const yaml = [
+    'services:',
+    '  one:',
+    '    image: alpine:3.20',
+    '    tmpfs: /run',
+    '  many:',
+    '    image: alpine:3.20',
+    '    tmpfs:',
+    '      - /run',
+    '      - /tmp/cache:size=64m,mode=1777',
+    '  none:',
+    '    image: alpine:3.20',
+  ].join('\n');
+  const model = DS.parseCompose(yaml);
+  const byName = Object.fromEntries(model.services.map((s) => [s.name, s]));
+  // vm-realm arrays fail deepEqual on prototype — compare via JSON.
+  assert.equal(JSON.stringify(byName.one.tmpfs), '["/run"]');
+  assert.equal(JSON.stringify(byName.many.tmpfs), '["/run","/tmp/cache"]');
+  assert.equal(JSON.stringify(byName.none.tmpfs), '[]');
+});
+
 test('parseCompose rejects an empty or non-object document', () => {
   let err;
   try {
