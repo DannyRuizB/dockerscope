@@ -359,6 +359,70 @@ test('port-conflict flags a port published twice by the same service', () => {
   assert.match(conflicts[0].message, /twice/);
 });
 
+test('duplicate-mount-target flags two mounts on one path, trailing slash included', () => {
+  // The daemon refuses the container at create ("Duplicate mount point") —
+  // and it normalizes trailing slashes before comparing, so /x and /x/ are
+  // the same mount point (both verified against a real daemon).
+  const yaml = [
+    'services:',
+    '  a:',
+    '    image: nginx:1.27',
+    '    volumes:',
+    '      - data:/var/lib/app',
+    '      - backup:/var/lib/app/',
+    'volumes:',
+    '  data:',
+    '  backup:',
+  ].join('\n');
+  const hits = DS.lint(DS.parseCompose(yaml)).findings.filter((f) => f.rule === 'duplicate-mount-target');
+  assert.equal(hits.length, 1);
+  assert.equal(hits[0].level, 'error');
+  assert.match(hits[0].message, /Duplicate mount point/);
+});
+
+test('duplicate-mount-target sees tmpfs entries and long-form volumes collide too', () => {
+  // tmpfs+volume dies at the daemon like any other pair; the tmpfs entry
+  // keeps its options, the long form spells the target under `target:`.
+  const yaml = [
+    'services:',
+    '  a:',
+    '    image: nginx:1.27',
+    '    tmpfs:',
+    '      - /run/app:size=64m',
+    '    volumes:',
+    '      - type: volume',
+    '        source: data',
+    '        target: /run/app',
+    'volumes:',
+    '  data:',
+  ].join('\n');
+  const hits = DS.lint(DS.parseCompose(yaml)).findings.filter((f) => f.rule === 'duplicate-mount-target');
+  assert.equal(hits.length, 1);
+});
+
+test('duplicate-mount-target spares distinct targets, shared sources, and other services', () => {
+  // The same volume mounted at two different paths is legal (and useful);
+  // mount namespaces are per container, so another service reusing the path
+  // is no conflict either.
+  const yaml = [
+    'services:',
+    '  a:',
+    '    image: nginx:1.27',
+    '    tmpfs: /run/app',
+    '    volumes:',
+    '      - data:/var/lib/app',
+    '      - data:/mnt/same-volume-elsewhere',
+    '  b:',
+    '    image: nginx:1.27',
+    '    volumes:',
+    '      - data:/var/lib/app',
+    'volumes:',
+    '  data:',
+  ].join('\n');
+  const hits = DS.lint(DS.parseCompose(yaml)).findings.filter((f) => f.rule === 'duplicate-mount-target');
+  assert.equal(hits.length, 0);
+});
+
 test('duplicate-container-name fires once, on the second claimant', () => {
   const yaml = [
     'services:',
@@ -540,7 +604,7 @@ test('the insecure sample trips every security rule at once', () => {
     'container-name-with-replicas', 'healthcheck-no-start-period',
     'service-healthy-no-healthcheck', 'healthcheck-test-invalid',
     'duplicate-env-key', 'undeclared-secret', 'ports-with-host-network',
-    'explicit-root-user',
+    'explicit-root-user', 'duplicate-mount-target',
   ]) {
     assert.ok(rules.has(r), `expected rule '${r}'`);
   }
