@@ -604,10 +604,83 @@ test('the insecure sample trips every security rule at once', () => {
     'container-name-with-replicas', 'healthcheck-no-start-period',
     'service-healthy-no-healthcheck', 'healthcheck-test-invalid',
     'duplicate-env-key', 'undeclared-secret', 'ports-with-host-network',
-    'explicit-root-user', 'duplicate-mount-target',
+    'explicit-root-user', 'duplicate-mount-target', 'network-mode-with-networks',
   ]) {
     assert.ok(rules.has(r), `expected rule '${r}'`);
   }
+});
+
+test('network-mode-with-networks flags the mutually exclusive pair for any mode', () => {
+  // Compose refuses the whole file ("declares mutually exclusive
+  // `network_mode` and `networks`: invalid compose project") — host,
+  // bridge and service: modes all die identically (verified live).
+  for (const mode of ['host', 'bridge', 'service:db']) {
+    const yaml = [
+      'services:',
+      '  db:',
+      '    image: postgres:16',
+      '  app:',
+      '    image: nginx:1.27',
+      `    network_mode: ${mode}`,
+      '    networks:',
+      '      - backend',
+      'networks:',
+      '  backend:',
+    ].join('\n');
+    const hits = DS.lint(DS.parseCompose(yaml)).findings.filter((f) => f.rule === 'network-mode-with-networks');
+    assert.equal(hits.length, 1, `expected one hit for mode ${mode}`);
+    assert.equal(hits[0].level, 'error');
+    assert.equal(hits[0].service, 'app');
+  }
+});
+
+test('network-mode-with-networks spares an empty networks list and either key alone', () => {
+  // `networks: []` passes `docker compose config` (verified live) — only a
+  // non-empty list collides with network_mode.
+  const emptyList = [
+    'services:',
+    '  app:',
+    '    image: nginx:1.27',
+    '    network_mode: host',
+    '    networks: []',
+  ].join('\n');
+  assert.ok(!DS.lint(DS.parseCompose(emptyList)).findings.some((f) => f.rule === 'network-mode-with-networks'));
+
+  const modeOnly = [
+    'services:',
+    '  app:',
+    '    image: nginx:1.27',
+    '    network_mode: host',
+  ].join('\n');
+  assert.ok(!DS.lint(DS.parseCompose(modeOnly)).findings.some((f) => f.rule === 'network-mode-with-networks'));
+
+  const networksOnly = [
+    'services:',
+    '  app:',
+    '    image: nginx:1.27',
+    '    networks:',
+    '      - backend',
+    'networks:',
+    '  backend:',
+  ].join('\n');
+  assert.ok(!DS.lint(DS.parseCompose(networksOnly)).findings.some((f) => f.rule === 'network-mode-with-networks'));
+});
+
+test('network-mode-with-networks sees the map form of networks too', () => {
+  const yaml = [
+    'services:',
+    '  app:',
+    '    image: nginx:1.27',
+    '    network_mode: none',
+    '    networks:',
+    '      backend:',
+    '        aliases:',
+    '          - app.internal',
+    'networks:',
+    '  backend:',
+  ].join('\n');
+  const hits = DS.lint(DS.parseCompose(yaml)).findings.filter((f) => f.rule === 'network-mode-with-networks');
+  assert.equal(hits.length, 1);
 });
 
 test('undeclared-network flags a missing top-level network, spares default and declared ones', () => {
