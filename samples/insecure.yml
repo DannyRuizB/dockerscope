@@ -22,6 +22,8 @@ services:
     privileged: true                 # privileged (error)
     user: root                       # explicit-root-user (warn) — overrides any USER the image drops to
     network_mode: host               # host-namespace
+    networks:
+      - backend                      # network-mode-with-networks (error) — mutually exclusive with network_mode
     ports:
       - "9100:9100"                  # ports-with-host-network (warn) — silently discarded under host networking
     pid: host                        # host-namespace

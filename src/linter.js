@@ -317,6 +317,24 @@ function rulePortsWithHostNetwork(svc) {
   }];
 }
 
+// `network_mode` and `networks` are mutually exclusive: Compose refuses the
+// whole file ("service X declares mutually exclusive `network_mode` and
+// `networks`: invalid compose project", verified against a real daemon —
+// host, bridge and service: modes all die identically; an *empty*
+// `networks: []` is accepted, so only a non-empty list fires). The usual
+// story is a service moved onto host networking (or another container's
+// stack) while its old networks list stayed behind. File-killing family
+// with port-conflict and duplicate-mount-target.
+function ruleNetworkModeWithNetworks(svc) {
+  if (!svc.networkMode || svc.networks.length === 0) return [];
+  return [{
+    level: "error",
+    rule: "network-mode-with-networks",
+    message: `declares mutually exclusive \`network_mode: ${svc.networkMode}\` and a \`networks:\` list — Compose refuses the whole file.`,
+    hint: "Keep one: `network_mode` replaces network attachment entirely, so drop the `networks:` list — or drop `network_mode` and let the service join its networks.",
+  }];
+}
+
 // Capabilities that, added back, largely defeat the point of dropping root.
 const DANGEROUS_CAPS = new Set([
   "SYS_ADMIN", "NET_ADMIN", "SYS_PTRACE", "SYS_MODULE",
@@ -851,6 +869,7 @@ const RULES = [
   ruleExplicitRootUser,
   ruleHostNamespace,
   rulePortsWithHostNetwork,
+  ruleNetworkModeWithNetworks,
   ruleDangerousCaps,
   ruleSensitiveHostMount,
   ruleNoNewPrivileges,
