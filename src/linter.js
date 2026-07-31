@@ -130,6 +130,35 @@ function ruleNoMemoryLimit(svc) {
   }];
 }
 
+// `oom_kill_disable: true` is a lie on every modern host and a host-killer
+// on the old ones. On cgroups v2 (every current distro) the daemon DISCARDS
+// it with a warning buried in the run output ("Your kernel does not support
+// OomKillDisable. OomKillDisable discarded", verified against a real
+// daemon) — the protection you think you configured does not exist. On
+// cgroups v1 it is honored, and Docker's own docs forbid the combination
+// judged as error here: with the OOM killer off and NO memory limit, a leak
+// eats host memory the kernel is no longer allowed to reclaim — the machine
+// hangs, not the container. With a limit the container freezes at the cap
+// instead of dying (the one legitimate, sharp-edged use) — that keeps a
+// warn, because on v2 hosts even that intent is silently dropped.
+function ruleOomKillDisable(svc) {
+  if (!svc.oomKillDisable) return [];
+  if (svc.memoryLimit == null) {
+    return [{
+      level: "error",
+      rule: "oom-kill-disable",
+      message: "disables the OOM killer with no memory limit — a leak can hang the whole host (cgroups v1), or the flag is silently discarded (cgroups v2).",
+      hint: "Remove `oom_kill_disable` — or, if you truly need it on a cgroups v1 host, pair it with a hard `memory:` limit as Docker's docs require.",
+    }];
+  }
+  return [{
+    level: "warn",
+    rule: "oom-kill-disable",
+    message: "disables the OOM killer — on cgroups v2 hosts (every modern distro) the daemon silently discards this flag.",
+    hint: "The memory limit keeps cgroups v1 hosts safe, but on v2 the setting is a no-op: the container is OOM-killed at the cap anyway. Remove it unless you still deploy to v1 hosts.",
+  }];
+}
+
 // A service with no CPU cap can pin every core on the host: a busy loop (a
 // runaway retry storm, a crypto-miner in a compromised image) starves the
 // other containers and the daemon itself. Completes the resource-caps
@@ -861,6 +890,7 @@ const RULES = [
   ruleNoRestart,
   ruleNoHealthcheck,
   ruleNoMemoryLimit,
+  ruleOomKillDisable,
   ruleNoPidsLimit,
   ruleNoCpuLimit,
   ruleNoLogLimit,
