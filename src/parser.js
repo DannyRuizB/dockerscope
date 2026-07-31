@@ -109,6 +109,8 @@ window.DockerScope.parseCompose = function (yamlText, fileMap) {
       tmpfs: parseTmpfs(raw.tmpfs),
       privileged: raw.privileged === true,
       readOnly: raw.read_only === true,
+      // `oom_kill_disable:` — only an explicit true matters to the linter.
+      oomKillDisable: raw.oom_kill_disable === true,
       // `user:` accepts a string ("root", "1000:1000", "www-data") or a bare
       // number (uid). Normalized to a string; null when absent — the linter
       // only judges an explicit value, never guesses the image's USER.

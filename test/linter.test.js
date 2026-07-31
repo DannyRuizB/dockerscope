@@ -605,6 +605,7 @@ test('the insecure sample trips every security rule at once', () => {
     'service-healthy-no-healthcheck', 'healthcheck-test-invalid',
     'duplicate-env-key', 'undeclared-secret', 'ports-with-host-network',
     'explicit-root-user', 'duplicate-mount-target', 'network-mode-with-networks',
+    'oom-kill-disable',
   ]) {
     assert.ok(rules.has(r), `expected rule '${r}'`);
   }
@@ -1483,4 +1484,57 @@ test('ports-with-host-network ignores other network_mode values (bridge, service
   ].join('\n');
   const { findings } = DS.lint(DS.parseCompose(compose));
   assert.ok(!findings.some((f) => f.rule === 'ports-with-host-network'));
+});
+
+test('oom-kill-disable: error with no memory limit, warn when a limit exists', () => {
+  // Verified against a real daemon: on cgroups v2 the flag is DISCARDED
+  // with a warning; on v1 without a limit a leak hangs the host.
+  const bare = [
+    'services:',
+    '  app:',
+    '    image: nginx:1.27',
+    '    oom_kill_disable: true',
+  ].join('\n');
+  const hits = DS.lint(DS.parseCompose(bare)).findings.filter((f) => f.rule === 'oom-kill-disable');
+  assert.equal(hits.length, 1);
+  assert.equal(hits[0].level, 'error');
+
+  const limited = [
+    'services:',
+    '  app:',
+    '    image: nginx:1.27',
+    '    oom_kill_disable: true',
+    '    mem_limit: 512m',
+  ].join('\n');
+  const hits2 = DS.lint(DS.parseCompose(limited)).findings.filter((f) => f.rule === 'oom-kill-disable');
+  assert.equal(hits2.length, 1);
+  assert.equal(hits2[0].level, 'warn');
+
+  // The modern limit spelling counts the same as the legacy one.
+  const deployLimited = [
+    'services:',
+    '  app:',
+    '    image: nginx:1.27',
+    '    oom_kill_disable: true',
+    '    deploy:',
+    '      resources:',
+    '        limits:',
+    '          memory: 512M',
+  ].join('\n');
+  assert.equal(
+    DS.lint(DS.parseCompose(deployLimited)).findings.filter((f) => f.rule === 'oom-kill-disable')[0].level,
+    'warn',
+  );
+});
+
+test('oom-kill-disable stays quiet when absent or explicitly false', () => {
+  const absent = ['services:', '  app:', '    image: nginx:1.27'].join('\n');
+  assert.ok(!DS.lint(DS.parseCompose(absent)).findings.some((f) => f.rule === 'oom-kill-disable'));
+  const explicit = [
+    'services:',
+    '  app:',
+    '    image: nginx:1.27',
+    '    oom_kill_disable: false',
+  ].join('\n');
+  assert.ok(!DS.lint(DS.parseCompose(explicit)).findings.some((f) => f.rule === 'oom-kill-disable'));
 });

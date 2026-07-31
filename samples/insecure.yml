@@ -20,6 +20,7 @@ services:
     image: monitoring-agent:latest
     container_name: edge             # duplicate-container-name (error) — proxy already claims it
     privileged: true                 # privileged (error)
+    oom_kill_disable: true           # oom-kill-disable (error) — no memory limit: host-hang on v1, silently discarded on v2
     user: root                       # explicit-root-user (warn) — overrides any USER the image drops to
     network_mode: host               # host-namespace
     networks:
