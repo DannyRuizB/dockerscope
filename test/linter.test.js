@@ -1538,3 +1538,78 @@ test('oom-kill-disable stays quiet when absent or explicitly false', () => {
   ].join('\n');
   assert.ok(!DS.lint(DS.parseCompose(explicit)).findings.some((f) => f.rule === 'oom-kill-disable'));
 });
+
+// --- depends-on-profile-gated (v0.34) ---------------------------------------
+
+test('depends-on-profile-gated fires when an ungated service depends on a gated one', () => {
+  const yml = [
+    'services:',
+    '  app:',
+    '    image: nginx:1.27',
+    '    depends_on: [db]',
+    '  db:',
+    '    image: postgres:16',
+    '    profiles: [extra]',
+  ].join('\n');
+  const hits = DS.lint(DS.parseCompose(yml)).findings.filter((f) => f.rule === 'depends-on-profile-gated');
+  assert.equal(hits.length, 1);
+  assert.equal(hits[0].service, 'app');
+  assert.equal(hits[0].level, 'warn');
+  assert.match(hits[0].message, /depends on undefined service/);
+});
+
+test('depends-on-profile-gated fires when the profiles do not cover the dep', () => {
+  // app runs under `web`; db only exists under `extra` — `--profile web` dies.
+  const yml = [
+    'services:',
+    '  app:',
+    '    image: nginx:1.27',
+    '    profiles: [web]',
+    '    depends_on: [db]',
+    '  db:',
+    '    image: postgres:16',
+    '    profiles: [extra]',
+  ].join('\n');
+  assert.equal(
+    DS.lint(DS.parseCompose(yml)).findings.filter((f) => f.rule === 'depends-on-profile-gated').length,
+    1,
+  );
+});
+
+test('depends-on-profile-gated stays quiet when the dependent profiles are a subset', () => {
+  // Every run that enables app (profile extra) also enables db.
+  const yml = [
+    'services:',
+    '  app:',
+    '    image: nginx:1.27',
+    '    profiles: [extra]',
+    '    depends_on: [db]',
+    '  db:',
+    '    image: postgres:16',
+    '    profiles: [extra, other]',
+  ].join('\n');
+  assert.ok(!DS.lint(DS.parseCompose(yml)).findings.some((f) => f.rule === 'depends-on-profile-gated'));
+});
+
+test('depends-on-profile-gated stays quiet for ungated deps and leaves dangling names alone', () => {
+  const quiet = [
+    'services:',
+    '  app:',
+    '    image: nginx:1.27',
+    '    depends_on: [db]',
+    '  db:',
+    '    image: postgres:16',
+  ].join('\n');
+  assert.ok(!DS.lint(DS.parseCompose(quiet)).findings.some((f) => f.rule === 'depends-on-profile-gated'));
+
+  // A dangling name is depends-on-unknown's finding, never this one.
+  const dangling = [
+    'services:',
+    '  app:',
+    '    image: nginx:1.27',
+    '    depends_on: [ghost]',
+  ].join('\n');
+  const found = DS.lint(DS.parseCompose(dangling)).findings;
+  assert.ok(found.some((f) => f.rule === 'depends-on-unknown'));
+  assert.ok(!found.some((f) => f.rule === 'depends-on-profile-gated'));
+});
