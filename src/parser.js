@@ -120,6 +120,9 @@ window.DockerScope.parseCompose = function (yamlText, fileMap) {
       capAdd: parseCapAdd(raw.cap_add),
       capDrop: parseCapAdd(raw.cap_drop),
       networkMode: typeof raw.network_mode === "string" ? raw.network_mode : null,
+      // `profiles:` gates when a service is enabled at all (empty = always
+      // on). A bare string is tolerated and normalized to a one-item list.
+      profiles: parseProfiles(raw.profiles),
       pidMode: typeof raw.pid === "string" ? raw.pid : null,
       ipcMode: typeof raw.ipc === "string" ? raw.ipc : null,
       securityOpt: Array.isArray(raw.security_opt) ? raw.security_opt.map(String) : [],
@@ -436,6 +439,17 @@ function isHostPath(s) {
 
 // Service-level `tmpfs:` accepts a single string or a list; each entry is
 // "/path" or "/path:opts". Returns the target paths, options dropped.
+// `profiles:` — a list of profile names per the spec; a bare string is
+// tolerated. Names are kept verbatim (interpolations stay opaque strings:
+// identical templates still compare equal, which is all the linter needs).
+function parseProfiles(value) {
+  if (typeof value === "string" || typeof value === "number") return [String(value)];
+  if (!Array.isArray(value)) return [];
+  return value
+    .filter((p) => typeof p === "string" || typeof p === "number")
+    .map(String);
+}
+
 function parseTmpfs(value) {
   const entries = typeof value === "string" ? [value] : Array.isArray(value) ? value : [];
   const out = [];

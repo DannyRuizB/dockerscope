@@ -636,6 +636,37 @@ function ruleDependsOnUnknown(svc, model) {
   return findings;
 }
 
+// A dependency that only exists under a profile the dependent doesn't share
+// dies on plain `docker compose up` with "depends on undefined service" — a
+// message that never mentions profiles, so the head-scratching is free.
+// Verified against compose v5.3.1: gated dep + ungated dependent fails by
+// default AND under any profile that enables the dependent but not the dep;
+// activating a covering profile makes the very same file valid — hence warn,
+// not error. The only safe shape: every profile that enables the dependent
+// also enables the dependency (dependent's profiles non-empty and a subset
+// of the dep's). Dangling names stay with depends-on-unknown.
+function ruleDependsOnProfileGated(svc, model) {
+  const byName = new Map(model.services.map((s) => [s.name, s]));
+  const findings = [];
+  for (const dep of svc.depends_on) {
+    const target = byName.get(dep);
+    if (!target) continue;
+    if (target.profiles.length === 0) continue;
+    const covered =
+      svc.profiles.length > 0 &&
+      svc.profiles.every((p) => target.profiles.includes(p));
+    if (covered) continue;
+    const gate = target.profiles.map((p) => `\`${p}\``).join(", ");
+    findings.push({
+      level: "warn",
+      rule: "depends-on-profile-gated",
+      message: `\`depends_on\` references \`${dep}\`, which only exists under profile(s) ${gate} — a plain \`docker compose up\` refuses the file with "depends on undefined service".`,
+      hint: `Align the profiles so every run that starts \`${svc.name}\` also enables \`${dep}\` (give \`${svc.name}\` the same profiles, or ungate \`${dep}\`); \`--profile ${target.profiles[0]}\` works but must be remembered on every invocation.`,
+    });
+  }
+  return findings;
+}
+
 // A cycle in depends_on (a → b → a, or a service depending on itself) is a
 // hard error: Compose refuses the whole file with "cyclic dependency". Easy
 // to create by accident when wiring up a new dependency without noticing the
@@ -915,6 +946,7 @@ const RULES = [
   ruleHealthcheckNoStartPeriod,
   ruleDependsOnUnknown,
   ruleDependsOnCycle,
+  ruleDependsOnProfileGated,
   ruleDependsOnIgnoresHealthcheck,
   ruleServiceHealthyNoHealthcheck,
   ruleHealthcheckTestInvalid,

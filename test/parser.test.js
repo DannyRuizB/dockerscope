@@ -149,3 +149,22 @@ test('parseCompose rejects an empty or non-object document', () => {
   assert.ok(err, 'should have thrown');
   assert.match(err.message, /Empty or invalid/);
 });
+
+test('parseCompose exposes profiles (list, bare string, absent)', () => {
+  const yml = [
+    'services:',
+    '  a:',
+    '    image: redis:7',
+    '    profiles: [extra, other]',
+    '  b:',
+    '    image: redis:7',
+    '    profiles: solo',
+    '  c:',
+    '    image: redis:7',
+  ].join('\n');
+  const model = DS.parseCompose(yml);
+  const byName = Object.fromEntries(model.services.map((s) => [s.name, s]));
+  assert.equal(JSON.stringify(byName.a.profiles), JSON.stringify(['extra', 'other']));
+  assert.equal(JSON.stringify(byName.b.profiles), JSON.stringify(['solo']));
+  assert.equal(JSON.stringify(byName.c.profiles), JSON.stringify([]));
+});
