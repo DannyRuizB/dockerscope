@@ -148,6 +148,13 @@ window.DockerScope.parseCompose = function (yamlText, fileMap) {
     ? Object.keys(doc.networks)
     : [];
 
+  // Declared networks marked `internal: true` — no route to the host's
+  // interfaces, and (verified against a real daemon) published ports on a
+  // service attached only to internal networks are silently never bound.
+  const internalNetworks = topNetworks.filter(
+    (k) => doc.networks[k] && doc.networks[k].internal === true
+  );
+
   // Collect all networks referenced by services that aren't declared at top level.
   const referenced = new Set();
   services.forEach(s => s.networks.forEach(n => referenced.add(n)));
@@ -173,6 +180,7 @@ window.DockerScope.parseCompose = function (yamlText, fileMap) {
     // The declared-only sets (no implicit additions) — the linter needs the
     // distinction to flag references Compose would reject as undefined.
     declaredNetworks: topNetworks,
+    internalNetworks,
     declaredVolumes: topVolumes,
     declaredSecrets: topSecrets,
     warnings,

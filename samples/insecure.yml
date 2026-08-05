@@ -50,12 +50,22 @@ services:
     ports:
       - "5432:5432"                  # port-public (warn) — on 0.0.0.0
     networks:
-      - backend                      # undeclared-network (error) — no top-level networks block
+      - backend                      # undeclared-network (error) — the top-level networks block doesn't declare it
     secrets:
       - db_root_password             # undeclared-secret (error) — no top-level secrets block
     volumes:
       - pgdata:/var/lib/postgresql/data   # undeclared-volume (error) — no top-level volumes block
       - pgbackup:/var/lib/postgresql/data # duplicate-mount-target (error) — same path twice, the daemon refuses the container
+
+  # Metrics UI parked on an internal-only network: isolation done so well
+  # that the published port below is never bound — Docker creates no host
+  # mapping for a service whose every network is internal, and says nothing.
+  metrics:
+    image: grafana/grafana:11.1.0
+    ports:
+      - "127.0.0.1:3000:3000"        # ports-on-internal-network (warn) — the only network is internal, the mapping is dead
+    networks:
+      - lockdown
 
   # Locally-built app that receives a secret as a build arg — `docker history`
   # shows it to anyone who can pull the resulting image.
@@ -73,3 +83,7 @@ services:
         API_TOKEN: sk-live-123456    # build-arg-secret (error)
     ports:
       - "80:8080"                    # port-conflict (error) — proxy already claims host port 80
+
+networks:
+  lockdown:
+    internal: true                   # no route out — and, less famously, no port bindings in
