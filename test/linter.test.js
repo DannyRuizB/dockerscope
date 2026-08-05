@@ -605,7 +605,7 @@ test('the insecure sample trips every security rule at once', () => {
     'service-healthy-no-healthcheck', 'healthcheck-test-invalid',
     'duplicate-env-key', 'undeclared-secret', 'ports-with-host-network',
     'explicit-root-user', 'duplicate-mount-target', 'network-mode-with-networks',
-    'oom-kill-disable',
+    'oom-kill-disable', 'ports-on-internal-network',
   ]) {
     assert.ok(rules.has(r), `expected rule '${r}'`);
   }
@@ -1430,6 +1430,107 @@ test('no-cpu-limit does not count cpu_shares as a cap (a weight, not a limit)', 
   ].join('\n');
   const { findings } = DS.lint(DS.parseCompose(compose));
   assert.ok(findings.some((f) => f.rule === 'no-cpu-limit'));
+});
+
+// --- ports-on-internal-network (v0.35) ----------------------------------------
+
+test('ports-on-internal-network fires when every joined network is internal', () => {
+  const compose = [
+    'services:',
+    '  web:',
+    '    image: nginx:1.27',
+    '    ports:',
+    '      - "127.0.0.1:8099:80"',
+    '      - "8443:443"',
+    '    networks: [locked]',
+    'networks:',
+    '  locked:',
+    '    internal: true',
+  ].join('\n');
+  const hits = DS.lint(DS.parseCompose(compose)).findings.filter((f) => f.rule === 'ports-on-internal-network');
+  assert.equal(hits.length, 1, 'one finding per service, not per mapping');
+  assert.equal(hits[0].service, 'web');
+  assert.equal(hits[0].level, 'warn');
+  assert.match(hits[0].message, /2 port mappings/);
+  assert.match(hits[0].message, /locked/);
+});
+
+test('ports-on-internal-network stays quiet when one joined network is not internal', () => {
+  // Verified live: one non-internal network restores the binding (HTTP 200).
+  const compose = [
+    'services:',
+    '  web:',
+    '    image: nginx:1.27',
+    '    ports:',
+    '      - "127.0.0.1:8099:80"',
+    '    networks: [locked, open]',
+    'networks:',
+    '  locked:',
+    '    internal: true',
+    '  open: {}',
+  ].join('\n');
+  assert.ok(!DS.lint(DS.parseCompose(compose)).findings.some((f) => f.rule === 'ports-on-internal-network'));
+});
+
+test('ports-on-internal-network judges the implicit default network when the file makes it internal', () => {
+  const noNetworksKey = [
+    'services:',
+    '  web:',
+    '    image: nginx:1.27',
+    '    ports:',
+    '      - "8080:80"',
+    'networks:',
+    '  default:',
+    '    internal: true',
+  ].join('\n');
+  const hits = DS.lint(DS.parseCompose(noNetworksKey)).findings.filter((f) => f.rule === 'ports-on-internal-network');
+  assert.equal(hits.length, 1);
+  assert.match(hits[0].message, /default/);
+
+  // Plain implicit default (not declared internal) stays quiet.
+  const plain = [
+    'services:',
+    '  web:',
+    '    image: nginx:1.27',
+    '    ports:',
+    '      - "8080:80"',
+  ].join('\n');
+  assert.ok(!DS.lint(DS.parseCompose(plain)).findings.some((f) => f.rule === 'ports-on-internal-network'));
+});
+
+test('ports-on-internal-network leaves ghosts and network_mode to their own rules', () => {
+  // `backend` is undeclared: its internal flag is unknowable, so this rule
+  // stays quiet and undeclared-network owns the finding.
+  const ghost = [
+    'services:',
+    '  web:',
+    '    image: nginx:1.27',
+    '    ports:',
+    '      - "8080:80"',
+    '    networks: [backend]',
+    'networks:',
+    '  locked:',
+    '    internal: true',
+  ].join('\n');
+  const ghostFindings = DS.lint(DS.parseCompose(ghost)).findings;
+  assert.ok(!ghostFindings.some((f) => f.rule === 'ports-on-internal-network'));
+  assert.ok(ghostFindings.some((f) => f.rule === 'undeclared-network'));
+
+  // host networking's dead ports belong to ports-with-host-network.
+  const hostMode = [
+    'services:',
+    '  agent:',
+    '    image: prom/node-exporter:v1.8.2',
+    '    network_mode: host',
+    '    ports:',
+    '      - "9100:9100"',
+    'networks:',
+    '  locked:',
+    '    internal: true',
+  ].join('\n');
+  const hostFindings = DS.lint(DS.parseCompose(hostMode)).findings;
+  assert.ok(!hostFindings.some((f) => f.rule === 'ports-on-internal-network'));
+  assert.ok(hostFindings.some((f) => f.rule === 'ports-with-host-network'));
 });
 
 // --- ports-with-host-network (v0.29) -----------------------------------------

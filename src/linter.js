@@ -346,6 +346,36 @@ function rulePortsWithHostNetwork(svc) {
   }];
 }
 
+// An `internal: true` network has no route to the host's interfaces — and
+// that includes published ports. For a service whose ONLY networks are
+// internal, the daemon keeps the request in HostConfig.PortBindings but
+// never creates the binding: NetworkSettings.Ports shows null and nothing
+// listens (verified against a real daemon — `docker compose up` prints no
+// warning at all, and `compose ps` quietly drops the arrow). The `ports:`
+// block is a lie in the file, same silent-no-op family as
+// ports-with-host-network and duplicate-env-key. One non-internal network
+// anywhere in the list restores the mapping (also verified), so mixed
+// attachments stay quiet — as do undeclared or interpolated networks,
+// whose internal flag is unknowable (`undeclared-network` owns ghosts).
+// Services on `network_mode` have no networks list to judge here: host's
+// dead ports are ports-with-host-network's finding.
+function rulePortsOnInternalNetwork(svc, model) {
+  if ((svc.ports || []).length === 0) return [];
+  if (svc.networkMode) return [];
+  const internal = new Set(model && model.internalNetworks || []);
+  if (internal.size === 0) return [];
+  const attached = svc.networks.length > 0 ? svc.networks : ["default"];
+  if (!attached.every((net) => internal.has(net))) return [];
+  const n = svc.ports.length;
+  const nets = attached.join("`, `");
+  return [{
+    level: "warn",
+    rule: "ports-on-internal-network",
+    message: `publishes ${n} port mapping${n === 1 ? "" : "s"} but every network it joins (\`${nets}\`) is \`internal: true\` — Docker silently never binds the host port${n === 1 ? "" : "s"}.`,
+    hint: "Attach the service to one non-internal network too (the internal ones keep isolating the rest), or drop the dead `ports:` block.",
+  }];
+}
+
 // `network_mode` and `networks` are mutually exclusive: Compose refuses the
 // whole file ("service X declares mutually exclusive `network_mode` and
 // `networks`: invalid compose project", verified against a real daemon —
@@ -930,6 +960,7 @@ const RULES = [
   ruleExplicitRootUser,
   ruleHostNamespace,
   rulePortsWithHostNetwork,
+  rulePortsOnInternalNetwork,
   ruleNetworkModeWithNetworks,
   ruleDangerousCaps,
   ruleSensitiveHostMount,
