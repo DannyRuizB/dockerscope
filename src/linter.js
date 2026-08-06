@@ -89,17 +89,53 @@ function ruleDuplicateEnvKey(svc) {
 // nginx, traefik, caddy, etc. are intentionally public, so they're excluded.
 const SENSITIVE_IMAGE_PATTERN = /(postgres|mysql|mariadb|mongo|mongodb|redis|memcached|elastic|rabbitmq|kafka|etcd|cassandra|influxdb|clickhouse)/i;
 
+// The image name is the FIRST way to recognize a data service, not the only
+// one: `image: registry.corp/team/api-db:7` matches nothing, and the port it
+// publishes is just as open. The container-side port is the second tell —
+// it names the protocol regardless of who built the image. Only ports whose
+// service should essentially never face the internet, so a published 80 or
+// 8080 stays quiet.
+const SENSITIVE_CONTAINER_PORTS = {
+  1433:  "mssql",
+  2375:  "docker api (plaintext — remote root)",
+  2376:  "docker api (tls)",
+  2379:  "etcd",
+  3306:  "mysql/mariadb",
+  5432:  "postgres",
+  5984:  "couchdb",
+  6379:  "redis",
+  8086:  "influxdb",
+  8200:  "vault",
+  9042:  "cassandra",
+  9092:  "kafka",
+  9200:  "elasticsearch",
+  11211: "memcached",
+  15672: "rabbitmq management",
+  27017: "mongodb",
+};
+
 function rulePortPublic(svc) {
-  if (!svc.image || !SENSITIVE_IMAGE_PATTERN.test(svc.image)) return [];
+  const imageIsSensitive = !!svc.image && SENSITIVE_IMAGE_PATTERN.test(svc.image);
   const findings = [];
   for (const p of svc.ports) {
     if (p.published == null) continue; // not published, only exposed inside the network
-    if (p.host_ip && p.host_ip !== "0.0.0.0") continue; // restricted to a specific interface
+    if (p.host_ip && p.host_ip !== "0.0.0.0" && p.host_ip !== "::") continue; // pinned to an interface
+    const service = SENSITIVE_CONTAINER_PORTS[p.target];
+    if (!imageIsSensitive && !service) continue;
+    // Verified against a real daemon: a mapping with no host IP binds
+    // 0.0.0.0 *and* [::], and its DNAT rule lands in nat/PREROUTING with no
+    // `-d` — so it matches on every interface and never passes through
+    // filter/INPUT, which is where ufw writes its rules. `ufw deny 5432`
+    // does not close this. Pinning the host IP adds `-d 127.0.0.1/32` to
+    // that same rule, which is what actually restricts it.
+    const what = service
+      ? `\`${service}\` (container port ${p.target})`
+      : "a database/cache image";
     findings.push({
       level: "warn",
       rule: "port-public",
-      message: `port \`${p.published}\` of a database/cache image is published on all interfaces (0.0.0.0).`,
-      hint: "Bind to `127.0.0.1:` so only the host can reach it, or remove the published port and rely on the internal network.",
+      message: `port \`${p.published}\` of ${what} is published on all interfaces (0.0.0.0 and [::]) — host firewall rules in INPUT (ufw included) do not filter it.`,
+      hint: "Bind to `127.0.0.1:` (e.g. `127.0.0.1:" + p.published + ":" + p.target + "`) so only the host can reach it, or remove the published port and rely on the internal network.",
     });
   }
   return findings;
@@ -647,6 +683,68 @@ function ruleHealthcheckNoStartPeriod(svc) {
   }];
 }
 
+// Compose duration strings: "500ms", "5s", "1m30s", "2h", or a bare number
+// (seconds). Returns milliseconds, or null when it can't be read (an
+// interpolation like `${HC_TIMEOUT}`, or nonsense — never guess).
+function parseComposeDuration(value) {
+  if (value == null) return null;
+  if (typeof value === "number") return value * 1000;
+  const s = String(value).trim();
+  if (/^\d+(\.\d+)?$/.test(s)) return parseFloat(s) * 1000;
+  const unit = { us: 0.001, ms: 1, s: 1000, m: 60000, h: 3600000 };
+  const re = /(\d+(?:\.\d+)?)(us|ms|s|m|h)/g;
+  let total = 0;
+  let matched = 0;
+  let m;
+  while ((m = re.exec(s)) !== null) {
+    total += parseFloat(m[1]) * unit[m[2]];
+    matched += m[0].length;
+  }
+  // Every character must belong to a number+unit pair, or we didn't
+  // understand the string (e.g. "${HC_TIMEOUT}", "fast").
+  return matched === s.length ? total : null;
+}
+
+function humanMs(ms) {
+  return ms % 1000 === 0 ? `${ms / 1000}s` : `${ms}ms`;
+}
+
+// `interval` is the PAUSE BETWEEN checks, not the period of the cycle —
+// Docker serializes probes and starts counting the interval only once the
+// previous one returns. Almost everyone reads it as "check every N
+// seconds", so a `timeout` larger than the `interval` is the tell that
+// someone wanted a fast loop while allowing a slow probe: the real cycle
+// becomes probe_duration + interval, and the time to notice a dead service
+// becomes retries × that.
+//
+// Measured against a real daemon (interval 2s, timeout 6s, retries 3, probe
+// sleeping 5s): each probe took 5.0s and the next started exactly 2.0s
+// AFTER the previous one ended — unhealthy landed 26.1s after the first
+// probe began, where the file reads like ~6s. That 3-4x gap is the finding.
+//
+// It also delays every `depends_on: condition: service_healthy` waiting on
+// this service, which is usually where the cost is actually felt.
+// Compose accepts the file without a murmur (verified) — nothing warns.
+// Only `>` fires: a timeout EQUAL to the interval is a defensible "the
+// probe must never take this long" choice, and a smell should not argue
+// with it. Unreadable durations (interpolations) are never judged.
+function ruleHealthcheckTimeoutExceedsInterval(svc) {
+  const hc = svc.healthcheck;
+  if (!hc || hc.disable === true) return [];
+  const timeout = parseComposeDuration(hc.timeout);
+  const interval = parseComposeDuration(hc.interval);
+  if (timeout == null || interval == null) return [];
+  if (timeout <= interval) return [];
+  const retries = Number.isInteger(hc.retries) && hc.retries > 0 ? hc.retries : 3;
+  const worst = retries * (timeout + interval);
+  return [{
+    level: "warn",
+    rule: "healthcheck-timeout-exceeds-interval",
+    message: `\`healthcheck.timeout\` (${humanMs(timeout)}) is longer than its \`interval\` (${humanMs(interval)}) — \`interval\` is the pause BETWEEN probes, not the cycle, so a slow probe stretches the loop to ${humanMs(timeout + interval)} and noticing a dead service can take ${humanMs(worst)} (retries: ${retries}).`,
+    hint: `Keep \`timeout\` well under \`interval\` (a probe that can outlast its own cycle is the real problem), or widen \`interval\` to match what the probe actually needs. Anything waiting on \`condition: service_healthy\` waits this long too.`,
+  }];
+}
+
 // depends_on must name services that exist in the same file: Compose refuses
 // the whole file otherwise ("service ... depends on undefined service").
 // Classic ways to hit it: a rename that missed the depends_on line, or a
@@ -975,6 +1073,7 @@ const RULES = [
   ruleDuplicateContainerName,
   ruleContainerNameWithReplicas,
   ruleHealthcheckNoStartPeriod,
+  ruleHealthcheckTimeoutExceedsInterval,
   ruleDependsOnUnknown,
   ruleDependsOnCycle,
   ruleDependsOnProfileGated,
