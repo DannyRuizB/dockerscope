@@ -606,6 +606,7 @@ test('the insecure sample trips every security rule at once', () => {
     'duplicate-env-key', 'undeclared-secret', 'ports-with-host-network',
     'explicit-root-user', 'duplicate-mount-target', 'network-mode-with-networks',
     'oom-kill-disable', 'ports-on-internal-network',
+    'healthcheck-timeout-exceeds-interval',
   ]) {
     assert.ok(rules.has(r), `expected rule '${r}'`);
   }
@@ -1713,4 +1714,137 @@ test('depends-on-profile-gated stays quiet for ungated deps and leaves dangling 
   const found = DS.lint(DS.parseCompose(dangling)).findings;
   assert.ok(found.some((f) => f.rule === 'depends-on-unknown'));
   assert.ok(!found.some((f) => f.rule === 'depends-on-profile-gated'));
+});
+
+test('healthcheck-timeout-exceeds-interval fires when the probe can outlast its own cycle', () => {
+  const compose = [
+    'services:',
+    '  slow:',
+    '    image: postgres:16',
+    '    healthcheck:',
+    '      test: ["CMD-SHELL", "pg_isready"]',
+    '      interval: 2s',
+    '      timeout: 6s',
+    '      retries: 3',
+    '      start_period: 10s',
+  ].join('\n');
+  const found = DS.lint(DS.parseCompose(compose)).findings
+    .filter((f) => f.rule === 'healthcheck-timeout-exceeds-interval');
+  assert.equal(found.length, 1);
+  assert.equal(found[0].level, 'warn');
+  // The message must carry the real numbers: the stretched cycle (timeout +
+  // interval) and the worst-case time to notice (retries x that). Measured
+  // against a real daemon with exactly these values: 26.1s.
+  assert.match(found[0].message, /pause BETWEEN probes/);
+  assert.match(found[0].message, /8s/);
+  assert.match(found[0].message, /24s/);
+});
+
+test('healthcheck-timeout-exceeds-interval is quiet when the timeout fits, equals, or is unreadable', () => {
+  const compose = [
+    'services:',
+    '  fits:',
+    '    image: postgres:16',
+    '    healthcheck:',
+    '      test: ["CMD-SHELL", "pg_isready"]',
+    '      interval: 30s',
+    '      timeout: 5s',
+    '  equal:',
+    '    image: postgres:16',
+    '    healthcheck:',
+    '      test: ["CMD-SHELL", "pg_isready"]',
+    '      interval: 10s',
+    '      timeout: 10s',
+    '  interpolated:',
+    '    image: postgres:16',
+    '    healthcheck:',
+    '      test: ["CMD-SHELL", "pg_isready"]',
+    '      interval: 5s',
+    '      timeout: ${HC_TIMEOUT}',
+    '  disabled:',
+    '    image: postgres:16',
+    '    healthcheck:',
+    '      disable: true',
+    '      interval: 1s',
+    '      timeout: 30s',
+  ].join('\n');
+  const found = DS.lint(DS.parseCompose(compose)).findings
+    .filter((f) => f.rule === 'healthcheck-timeout-exceeds-interval');
+  assert.equal(found.length, 0);
+});
+
+test('healthcheck-timeout-exceeds-interval reads compound and sub-second durations', () => {
+  const compose = [
+    'services:',
+    '  compound:',
+    '    image: redis:7',
+    '    healthcheck:',
+    '      test: ["CMD", "redis-cli", "ping"]',
+    '      interval: 1m',
+    '      timeout: 1m30s',
+    '  subsecond:',
+    '    image: redis:7',
+    '    healthcheck:',
+    '      test: ["CMD", "redis-cli", "ping"]',
+    '      interval: 500ms',
+    '      timeout: 2s',
+    '  bareseconds:',
+    '    image: redis:7',
+    '    healthcheck:',
+    '      test: ["CMD", "redis-cli", "ping"]',
+    '      interval: 5',
+    '      timeout: 10',
+  ].join('\n');
+  const found = DS.lint(DS.parseCompose(compose)).findings
+    .filter((f) => f.rule === 'healthcheck-timeout-exceeds-interval');
+  assert.equal(found.length, 3);
+  const names = found.map((f) => f.service).sort();
+  assert.equal(JSON.stringify(names), JSON.stringify(['bareseconds', 'compound', 'subsecond']));
+});
+
+test('port-public recognizes a sensitive container port even when the image name says nothing', () => {
+  const compose = [
+    'services:',
+    // A private registry image: the name matches no known database pattern,
+    // but the container port names the protocol all the same.
+    '  corp-db:',
+    '    image: registry.corp/team/api-db:7',
+    '    ports:',
+    '      - "5432:5432"',
+    // The Docker API in plaintext is the worst of the set: remote root.
+    '  dind:',
+    '    image: docker:27-dind',
+    '    ports:',
+    '      - "2375:2375"',
+  ].join('\n');
+  const found = DS.lint(DS.parseCompose(compose)).findings.filter((f) => f.rule === 'port-public');
+  assert.equal(found.length, 2);
+  assert.match(found[0].message, /`postgres` \(container port 5432\)/);
+  assert.match(found[1].message, /`docker api \(plaintext — remote root\)` \(container port 2375\)/);
+  // The point of the message: a host firewall in INPUT does not filter this.
+  assert.match(found[0].message, /ufw included/);
+});
+
+test('port-public stays quiet for a pinned host IP, an ordinary port, and an unpublished one', () => {
+  const compose = [
+    'services:',
+    '  pinned:',
+    '    image: registry.corp/team/api-db:7',
+    '    ports:',
+    '      - "127.0.0.1:5432:5432"',
+    '  lan-pinned:',
+    '    image: registry.corp/team/api-db:7',
+    '    ports:',
+    '      - "10.0.0.5:5432:5432"',
+    '  web:',
+    '    image: registry.corp/team/frontend:2',
+    '    ports:',
+    '      - "8080:80"',
+    '  internal-only:',
+    '    image: registry.corp/team/api-db:7',
+    '    expose:',
+    '      - "5432"',
+  ].join('\n');
+  const found = DS.lint(DS.parseCompose(compose)).findings.filter((f) => f.rule === 'port-public');
+  assert.equal(found.length, 0);
 });

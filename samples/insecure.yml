@@ -45,6 +45,9 @@ services:
     healthcheck:                     # defined… but see app's depends_on below
       test: ["CMD-SHELL", "pg_isready -U postgres"]
       interval: 10s                  # healthcheck-no-start-period (warn) — boot failures count against retries
+      timeout: 30s                   # healthcheck-timeout-exceeds-interval (warn) — "pg_isready was timing out, so I raised it":
+                                     # interval is the PAUSE between probes, so a slow probe stretches the cycle to 40s and
+                                     # unhealthy takes retries x that — and app's `condition: service_healthy` waits it out
     environment:
       POSTGRES_PASSWORD: hunter2     # env-secret (error)
     ports:
