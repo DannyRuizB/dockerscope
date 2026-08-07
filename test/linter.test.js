@@ -1848,3 +1848,88 @@ test('port-public stays quiet for a pinned host IP, an ordinary port, and an unp
   const found = DS.lint(DS.parseCompose(compose)).findings.filter((f) => f.rule === 'port-public');
   assert.equal(found.length, 0);
 });
+
+// --- restart-not-a-string (v0.37) ----------------------------------------
+
+test('restart: false (a YAML boolean) is an error - Compose rejects the file', () => {
+  const yaml = ['services:', '  app:', '    image: debian:13', '    restart: false'].join('\n');
+  const { findings } = DS.lint(DS.parseCompose(yaml));
+  const rules = new Set(findings.map((f) => f.rule));
+  assert.ok(rules.has('restart-not-a-string'), 'boolean restart → error');
+  // ...and it does NOT also nag about a missing policy: one message, not two.
+  assert.ok(!rules.has('no-restart'), 'no double report with no-restart');
+});
+
+test('the unquoted word `no` is the STRING "no" and is accepted (YAML 1.2)', () => {
+  const yaml = ['services:', '  app:', '    image: debian:13', '    restart: no'].join('\n');
+  const model = DS.parseCompose(yaml);
+  assert.equal(model.services[0].restart, 'no');
+  const rules = new Set(DS.lint(model).findings.map((f) => f.rule));
+  assert.ok(!rules.has('restart-not-a-string'), 'string "no" is valid');
+  assert.ok(!rules.has('no-restart'), 'a policy IS set');
+});
+
+// --- restart-no-with-healthcheck (v0.37) ---------------------------------
+
+test('restart "no" + a healthcheck nobody consumes is flagged', () => {
+  const yaml = [
+    'services:',
+    '  worker:',
+    '    image: registry.corp/team/worker:3',
+    '    restart: "no"',
+    '    healthcheck:',
+    '      test: ["CMD", "true"]',
+  ].join('\n');
+  const { findings } = DS.lint(DS.parseCompose(yaml));
+  assert.ok(findings.some((f) => f.rule === 'restart-no-with-healthcheck' && f.level === 'warn'));
+});
+
+test('a service_healthy dependent spares restart "no" + healthcheck', () => {
+  const yaml = [
+    'services:',
+    '  db:',
+    '    image: registry.corp/team/api-db:7',
+    '    restart: "no"',
+    '    healthcheck:',
+    '      test: ["CMD", "true"]',
+    '  app:',
+    '    image: registry.corp/team/api:2',
+    '    depends_on:',
+    '      db:',
+    '        condition: service_healthy',
+  ].join('\n');
+  const found = DS.lint(DS.parseCompose(yaml)).findings.filter((f) => f.rule === 'restart-no-with-healthcheck');
+  assert.equal(found.length, 0, 'a consumer of the health signal spares it');
+});
+
+test('restart "no" without a healthcheck never fires (nothing to watch)', () => {
+  const yaml = ['services:', '  job:', '    image: registry.corp/team/job:1', '    restart: "no"'].join('\n');
+  const found = DS.lint(DS.parseCompose(yaml)).findings.filter((f) => f.rule === 'restart-no-with-healthcheck');
+  assert.equal(found.length, 0);
+});
+
+test('a disabled healthcheck under restart "no" does not fire (no signal exists)', () => {
+  const yaml = [
+    'services:',
+    '  job:',
+    '    image: registry.corp/team/job:1',
+    '    restart: "no"',
+    '    healthcheck:',
+    '      test: ["NONE"]',
+  ].join('\n');
+  const found = DS.lint(DS.parseCompose(yaml)).findings.filter((f) => f.rule === 'restart-no-with-healthcheck');
+  assert.equal(found.length, 0);
+});
+
+test('restart always + healthcheck is fine - the policy consumes nothing but is not "no"', () => {
+  const yaml = [
+    'services:',
+    '  svc:',
+    '    image: registry.corp/team/svc:1',
+    '    restart: always',
+    '    healthcheck:',
+    '      test: ["CMD", "true"]',
+  ].join('\n');
+  const found = DS.lint(DS.parseCompose(yaml)).findings.filter((f) => f.rule === 'restart-no-with-healthcheck');
+  assert.equal(found.length, 0);
+});
