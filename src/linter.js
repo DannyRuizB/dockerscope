@@ -143,11 +143,57 @@ function rulePortPublic(svc) {
 
 function ruleNoRestart(svc) {
   if (svc.restart) return [];
+  // A mistyped restart is its own (worse) problem — one message, not two.
+  if (svc.restartInvalid) return [];
   return [{
     level: "warn",
     rule: "no-restart",
     message: "no `restart` policy set.",
     hint: "Add `restart: unless-stopped` (or `always`) so the container survives reboots and crashes.",
+  }];
+}
+
+// `restart: false` looks like a reasonable spelling of "don't restart" and is
+// not: compose rejects any non-string restart outright — measured:
+// "services.app.restart must be a string", the file never comes up. The YAML
+// trap cuts the other way here: js-yaml and compose both speak YAML 1.2, so
+// the unquoted word `no` is the STRING "no" and works — it is the
+// explicitly-typed boolean (or a number) that kills the file.
+function ruleRestartNotAString(svc) {
+  if (!svc.restartInvalid) return [];
+  return [{
+    level: "error",
+    rule: "restart-not-a-string",
+    message: "`restart` is not a string — Compose rejects the whole file (`restart must be a string`).",
+    hint: "Write `restart: \"no\"` / `always` / `unless-stopped` / `on-failure`. A YAML boolean or number here fails validation before anything starts.",
+  }];
+}
+
+// A healthcheck watches a service that `restart: "no"` tells Docker never to
+// revive — and if nothing waits on `service_healthy`, nobody acts on the
+// verdict at all. Measured on the real daemon: health status NEVER triggers
+// a restart in plain Compose (a container with `restart: always` and a
+// failing probe sat at "running (unhealthy)" with RestartCount 0 and a
+// growing FailingStreak) — restart policies act on process EXIT only, so the
+// check's real consumers are `service_healthy` gates, external monitors and
+// humans reading `docker ps`. With restart "no" and no dependent gating on
+// it, the file says "watch this closely" and "never bring it back" in the
+// same breath. Absence of `restart` never fires (the default is "no", but
+// not writing the key is not a statement — the explicit-root-user
+// precedent), and one dependent waiting on service_healthy spares it.
+function ruleRestartNoWithHealthcheck(svc, model) {
+  if (svc.restart !== "no") return [];
+  if (!svc.healthcheck || healthcheckDisabled(svc.healthcheck)) return [];
+  const consumed = model.services.some((other) =>
+    other !== svc &&
+    (other.depends_on || []).includes(svc.name) &&
+    (other.dependsOnConditions || {})[svc.name] === "service_healthy");
+  if (consumed) return [];
+  return [{
+    level: "warn",
+    rule: "restart-no-with-healthcheck",
+    message: "explicit `restart: \"no\"` on a service with a healthcheck nothing consumes.",
+    hint: "Docker never restarts a container for being unhealthy — with restart \"no\" and no `service_healthy` dependent, the check labels a corpse. Give the service a restart policy, point a dependent at `condition: service_healthy`, or drop the healthcheck.",
   }];
 }
 
@@ -1047,6 +1093,8 @@ const RULES = [
   ruleDuplicateEnvKey,
   rulePortPublic,
   ruleNoRestart,
+  ruleRestartNotAString,
+  ruleRestartNoWithHealthcheck,
   ruleNoHealthcheck,
   ruleNoMemoryLimit,
   ruleOomKillDisable,

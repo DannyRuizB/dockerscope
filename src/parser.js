@@ -83,6 +83,14 @@ window.DockerScope.parseCompose = function (yamlText, fileMap) {
       ports: parsePorts(raw.ports, warnings, name),
       environment: parseEnvironment(raw.environment),
       restart: typeof raw.restart === "string" ? raw.restart : null,
+      // `restart: false` LOOKS like a reasonable spelling of "don't restart"
+      // and kills the whole file: compose rejects any non-string restart
+      // (measured: "services.app.restart must be a string"). Surfaced as a
+      // flag so the linter can name it instead of silently reading "no
+      // policy set". Note the YAML trap cuts the OTHER way here: js-yaml 4
+      // and compose both speak YAML 1.2, so the unquoted word `no` is the
+      // STRING "no" (fine) — it is the explicit boolean that breaks.
+      restartInvalid: raw.restart !== undefined && raw.restart !== null && typeof raw.restart !== "string",
       containerName: typeof raw.container_name === "string" ? raw.container_name : null,
       // deploy.replicas, falling back to the legacy service-level `scale`.
       // Only plain numbers are kept — interpolations stay null.
