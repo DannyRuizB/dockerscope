@@ -192,3 +192,23 @@ test('parseCompose exposes sysctls (map and list form) and utsMode', () => {
   assert.equal(byName.b.utsMode, null);
   assert.equal(JSON.stringify(byName.c.sysctls), JSON.stringify([]));
 });
+
+test('expose entries are surfaced as strings; absence is an empty list', () => {
+  const yaml = [
+    'services:',
+    '  a:',
+    '    image: a:1',
+    '    expose:',
+    '      - 9090',
+    '      - "8000-8010"',
+    '  b:',
+    '    image: b:1',
+  ].join('\n');
+  const model = DS.parseCompose(yaml);
+  const a = model.services.find((s) => s.name === 'a');
+  const b = model.services.find((s) => s.name === 'b');
+  // JSON, not deepEqual: the model comes from the parser's own realm, where
+  // deepEqual sees "same structure, not reference-equal".
+  assert.equal(JSON.stringify(a.expose), JSON.stringify(['9090', '8000-8010']));
+  assert.equal(JSON.stringify(b.expose), JSON.stringify([]));
+});

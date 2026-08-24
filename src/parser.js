@@ -12,6 +12,7 @@
 //     privileged: boolean,
 //     capAdd: [string],               // upper-cased Linux capabilities from cap_add
 //     networkMode: string|null,       // e.g. "host"
+//     expose: [string],               // `expose:` entries, stringified verbatim
 //     pidMode: string|null, ipcMode: string|null,  // e.g. "host"
 //     utsMode: string|null,           // `uts:` — only "host" is meaningful
 //     sysctls: [{key, value}],        // sysctls normalized like environment
@@ -130,6 +131,11 @@ window.DockerScope.parseCompose = function (yamlText, fileMap) {
       capAdd: parseCapAdd(raw.cap_add),
       capDrop: parseCapAdd(raw.cap_drop),
       networkMode: typeof raw.network_mode === "string" ? raw.network_mode : null,
+      // `expose:` — numbers or strings ("3000", "8000-8010"), kept verbatim
+      // as strings. It maps no host port, but it is NOT inert: under a
+      // container-type network_mode the daemon refuses the container over it
+      // (measured), which is exactly why the linter needs to see it.
+      expose: Array.isArray(raw.expose) ? raw.expose.map(String) : [],
       // `profiles:` gates when a service is enabled at all (empty = always
       // on). A bare string is tolerated and normalized to a one-item list.
       profiles: parseProfiles(raw.profiles),
