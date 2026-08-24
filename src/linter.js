@@ -476,6 +476,80 @@ function ruleNetworkModeWithNetworks(svc) {
   }];
 }
 
+// The only sysctls a container may set are the ones that live in a kernel
+// namespace of its own: the IPC set (kernel.msg*/sem/shm*, fs.mqueue.*),
+// net.*, and kernel.domainname (UTS). Everything else — vm.*, fs.file-max,
+// kernel.pid_max… — is host-global state, and runc refuses to create the
+// container: `sysctl "X" is not in a separate kernel namespace`. Measured
+// THROUGH COMPOSE against a real daemon (29.1.3): `docker compose config`
+// accepts the file without a murmur and `up` dies at create. The docker CLI
+// pre-validates `--sysctl` with a stricter list that even rejects
+// kernel.domainname — compose talks straight to the API, so runc is the
+// gate that actually rules, and domainname WORKS in a compose file.
+// The classic bite: Elasticsearch's vm.max_map_count and Redis's
+// vm.overcommit_memory pasted from the project docs into `sysctls:` —
+// those are HOST settings; the container can never set them for itself.
+const IPC_SYSCTLS = new Set([
+  "kernel.msgmax", "kernel.msgmnb", "kernel.msgmni", "kernel.sem",
+  "kernel.shmall", "kernel.shmmax", "kernel.shmmni", "kernel.shm_rmid_forced",
+]);
+
+// The namespace a sysctl key lives in, or null for host-global keys.
+function sysctlNamespace(key) {
+  if (IPC_SYSCTLS.has(key) || key.startsWith("fs.mqueue.")) return "ipc";
+  if (key.startsWith("net.")) return "network";
+  if (key === "kernel.domainname") return "uts";
+  return null;
+}
+
+function ruleSysctlNotNamespaced(svc) {
+  const out = [];
+  const seen = new Set();
+  for (const { key } of svc.sysctls) {
+    if (seen.has(key) || key.includes("${")) continue;
+    seen.add(key);
+    if (sysctlNamespace(key) !== null) continue;
+    out.push({
+      level: "error",
+      rule: "sysctl-not-namespaced",
+      message: `sysctl \`${key}\` is not namespaced — the container is never created (runc: "not in a separate kernel namespace"), and \`docker compose config\` accepts the file without a word.`,
+      hint: "Only the IPC set (kernel.msg*/sem/shm*, fs.mqueue.*), net.* and kernel.domainname can be set per-container. vm.max_map_count / vm.overcommit_memory belong on the HOST: `sysctl -w` now, /etc/sysctl.d to persist.",
+    });
+  }
+  return out;
+}
+
+// A namespaced sysctl stops being settable the moment the service hands
+// that namespace back to the host. Measured against a real daemon:
+// net.* + `network_mode: host` → runc "not allowed in host network
+// namespace"; kernel.shmmax + `ipc: host` → "not allowed in the hosts ipc
+// namespace"; kernel.domainname + `uts: host` dies too — the container is
+// never created. Only the literal `host` forfeits the namespace:
+// `network_mode: service:x` joins a PRIVATE namespace and net.* sysctls
+// there work (also measured).
+function ruleSysctlInHostNamespace(svc) {
+  const shared = {
+    network: svc.networkMode === "host" ? "network_mode: host" : null,
+    ipc: svc.ipcMode === "host" ? "ipc: host" : null,
+    uts: svc.utsMode === "host" ? "uts: host" : null,
+  };
+  const out = [];
+  const seen = new Set();
+  for (const { key } of svc.sysctls) {
+    if (seen.has(key) || key.includes("${")) continue;
+    seen.add(key);
+    const ns = sysctlNamespace(key);
+    if (!ns || !shared[ns]) continue;
+    out.push({
+      level: "error",
+      rule: "sysctl-in-host-namespace",
+      message: `sysctl \`${key}\` needs the container's own ${ns} namespace, but \`${shared[ns]}\` hands that namespace to the host — the container is never created.`,
+      hint: `Set it on the host instead, or drop \`${shared[ns]}\`. A container can only tune the namespaces it actually owns.`,
+    });
+  }
+  return out;
+}
+
 // Capabilities that, added back, largely defeat the point of dropping root.
 const DANGEROUS_CAPS = new Set([
   "SYS_ADMIN", "NET_ADMIN", "SYS_PTRACE", "SYS_MODULE",
@@ -1108,6 +1182,8 @@ const RULES = [
   rulePortsWithHostNetwork,
   rulePortsOnInternalNetwork,
   ruleNetworkModeWithNetworks,
+  ruleSysctlNotNamespaced,
+  ruleSysctlInHostNamespace,
   ruleDangerousCaps,
   ruleSensitiveHostMount,
   ruleNoNewPrivileges,

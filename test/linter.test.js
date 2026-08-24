@@ -1933,3 +1933,126 @@ test('restart always + healthcheck is fine - the policy consumes nothing but is 
   const found = DS.lint(DS.parseCompose(yaml)).findings.filter((f) => f.rule === 'restart-no-with-healthcheck');
   assert.equal(found.length, 0);
 });
+
+// --- sysctl-not-namespaced (v0.38) ----------------------------------------
+
+test('vm.max_map_count in sysctls is an error - the container is never created', () => {
+  const yaml = [
+    'services:',
+    '  search:',
+    '    image: registry.corp/team/search:8',
+    '    sysctls:',
+    '      vm.max_map_count: 262144',
+  ].join('\n');
+  const rules = new Set(DS.lint(DS.parseCompose(yaml)).findings.map((f) => f.rule));
+  assert.ok(rules.has('sysctl-not-namespaced'), 'vm.* is host-global');
+  // ...and the host-namespace rule stays out of it: one finding, not two.
+  assert.ok(!rules.has('sysctl-in-host-namespace'), 'no double report');
+});
+
+test('list-form sysctls are judged too (fs.file-max=...)', () => {
+  const yaml = [
+    'services:',
+    '  app:',
+    '    image: registry.corp/team/app:1',
+    '    sysctls:',
+    '      - fs.file-max=100000',
+  ].join('\n');
+  const found = DS.lint(DS.parseCompose(yaml)).findings.filter((f) => f.rule === 'sysctl-not-namespaced');
+  assert.equal(found.length, 1);
+  assert.equal(found[0].level, 'error');
+});
+
+test('the namespaced set is quiet: IPC, fs.mqueue.*, net.* and kernel.domainname', () => {
+  const yaml = [
+    'services:',
+    '  tuned:',
+    '    image: registry.corp/team/tuned:1',
+    '    sysctls:',
+    '      net.core.somaxconn: 1024',
+    '      kernel.shmmax: 68719476736',
+    '      kernel.sem: 250 32000 100 128',
+    '      fs.mqueue.msg_max: 64',
+    '      kernel.domainname: lab',
+  ].join('\n');
+  const rules = new Set(DS.lint(DS.parseCompose(yaml)).findings.map((f) => f.rule));
+  assert.ok(!rules.has('sysctl-not-namespaced'), 'all five are namespaced');
+  assert.ok(!rules.has('sysctl-in-host-namespace'), 'no host namespace in play');
+});
+
+test('interpolated sysctl keys are never judged - the value comes from outside the file', () => {
+  const yaml = [
+    'services:',
+    '  app:',
+    '    image: registry.corp/team/app:1',
+    '    sysctls:',
+    '      - ${EXTRA_SYSCTL}=1',
+  ].join('\n');
+  const rules = new Set(DS.lint(DS.parseCompose(yaml)).findings.map((f) => f.rule));
+  assert.ok(!rules.has('sysctl-not-namespaced'));
+});
+
+// --- sysctl-in-host-namespace (v0.38) -------------------------------------
+
+test('net.* sysctl under network_mode: host is an error - the namespace was given away', () => {
+  const yaml = [
+    'services:',
+    '  edge:',
+    '    image: registry.corp/team/edge:2',
+    '    network_mode: host',
+    '    sysctls:',
+    '      net.core.somaxconn: 1024',
+  ].join('\n');
+  const found = DS.lint(DS.parseCompose(yaml)).findings.filter((f) => f.rule === 'sysctl-in-host-namespace');
+  assert.equal(found.length, 1);
+  assert.equal(found[0].level, 'error');
+  assert.ok(found[0].message.includes('network_mode: host'));
+});
+
+test('net.* sysctl under network_mode: service:x is fine - the joined namespace is private', () => {
+  const yaml = [
+    'services:',
+    '  base:',
+    '    image: registry.corp/team/base:1',
+    '  joined:',
+    '    image: registry.corp/team/app:1',
+    '    network_mode: service:base',
+    '    sysctls:',
+    '      net.core.somaxconn: 1024',
+  ].join('\n');
+  const rules = new Set(DS.lint(DS.parseCompose(yaml)).findings.map((f) => f.rule));
+  assert.ok(!rules.has('sysctl-in-host-namespace'), 'only the literal host forfeits it');
+});
+
+test('IPC sysctls under ipc: host and kernel.domainname under uts: host both fire', () => {
+  const yaml = [
+    'services:',
+    '  shm:',
+    '    image: registry.corp/team/db:1',
+    '    ipc: host',
+    '    sysctls:',
+    '      kernel.shmmax: 68719476736',
+    '      fs.mqueue.msg_max: 64',
+    '  named:',
+    '    image: registry.corp/team/app:1',
+    '    uts: host',
+    '    sysctls:',
+    '      kernel.domainname: lab',
+  ].join('\n');
+  const found = DS.lint(DS.parseCompose(yaml)).findings.filter((f) => f.rule === 'sysctl-in-host-namespace');
+  assert.equal(found.length, 3, 'two IPC keys + one UTS key');
+});
+
+test('a host-global sysctl under network_mode: host reports once, as not-namespaced', () => {
+  const yaml = [
+    'services:',
+    '  app:',
+    '    image: registry.corp/team/app:1',
+    '    network_mode: host',
+    '    sysctls:',
+    '      vm.overcommit_memory: 1',
+  ].join('\n');
+  const findings = DS.lint(DS.parseCompose(yaml)).findings;
+  assert.equal(findings.filter((f) => f.rule === 'sysctl-not-namespaced').length, 1);
+  assert.equal(findings.filter((f) => f.rule === 'sysctl-in-host-namespace').length, 0);
+});
