@@ -13,6 +13,8 @@
 //     capAdd: [string],               // upper-cased Linux capabilities from cap_add
 //     networkMode: string|null,       // e.g. "host"
 //     pidMode: string|null, ipcMode: string|null,  // e.g. "host"
+//     utsMode: string|null,           // `uts:` — only "host" is meaningful
+//     sysctls: [{key, value}],        // sysctls normalized like environment
 //     securityOpt: [string],          // raw security_opt entries, e.g. "no-new-privileges:true"
 //     buildArgs: [{key, value}],      // build.args normalized like environment
 //     command: string|null, entrypoint: string|null,  // space-joined if exec-form list
@@ -133,6 +135,13 @@ window.DockerScope.parseCompose = function (yamlText, fileMap) {
       profiles: parseProfiles(raw.profiles),
       pidMode: typeof raw.pid === "string" ? raw.pid : null,
       ipcMode: typeof raw.ipc === "string" ? raw.ipc : null,
+      // `uts:` — only the literal "host" matters to the linter (it hands the
+      // UTS namespace to the host, which forfeits kernel.domainname).
+      utsMode: typeof raw.uts === "string" ? raw.uts : null,
+      // `sysctls:` accepts the same two shapes as environment (mapping or
+      // "key=value" list) — reuse the same normalizer. The rules judge the
+      // keys; values ride along for display.
+      sysctls: parseEnvironment(raw.sysctls),
       securityOpt: Array.isArray(raw.security_opt) ? raw.security_opt.map(String) : [],
       // command / entrypoint accept a string or an exec-form list; normalize
       // both to one space-joined string — the linter only scans, never runs.

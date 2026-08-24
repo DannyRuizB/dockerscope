@@ -168,3 +168,27 @@ test('parseCompose exposes profiles (list, bare string, absent)', () => {
   assert.equal(JSON.stringify(byName.b.profiles), JSON.stringify(['solo']));
   assert.equal(JSON.stringify(byName.c.profiles), JSON.stringify([]));
 });
+
+test('parseCompose exposes sysctls (map and list form) and utsMode', () => {
+  const yml = [
+    'services:',
+    '  a:',
+    '    image: redis:7',
+    '    uts: host',
+    '    sysctls:',
+    '      net.core.somaxconn: 1024',
+    '  b:',
+    '    image: redis:7',
+    '    sysctls:',
+    '      - vm.max_map_count=262144',
+    '  c:',
+    '    image: redis:7',
+  ].join('\n');
+  const model = DS.parseCompose(yml);
+  const byName = Object.fromEntries(model.services.map((s) => [s.name, s]));
+  assert.equal(JSON.stringify(byName.a.sysctls), JSON.stringify([{ key: 'net.core.somaxconn', value: '1024' }]));
+  assert.equal(byName.a.utsMode, 'host');
+  assert.equal(JSON.stringify(byName.b.sysctls), JSON.stringify([{ key: 'vm.max_map_count', value: '262144' }]));
+  assert.equal(byName.b.utsMode, null);
+  assert.equal(JSON.stringify(byName.c.sysctls), JSON.stringify([]));
+});
