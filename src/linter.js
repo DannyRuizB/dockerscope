@@ -476,6 +476,62 @@ function ruleNetworkModeWithNetworks(svc) {
   }];
 }
 
+// Where `network_mode: host` silently DISCARDS the ports block
+// (ports-with-host-network's finding), the container-type modes
+// (`service:x`, `container:y`) refuse it outright — and only at `up`:
+// `docker compose config` validates the file without a word, then the
+// daemon rejects the create with "conflicting options: port publishing and
+// the container type network mode" (measured; `expose:` dies the same way,
+// as "port exposing" — the one place that usually-inert key kills a
+// container). The classic bite is the VPN-sidecar pattern: the app joins
+// `service:vpn` so its traffic can only leave through the tunnel, and the
+// ports stay on the app where they always were. They must move to the
+// namespace owner — the sockets live in ITS stack — and nothing else is
+// needed: Compose derives the depends_on from `service:` mode by itself
+// (measured: an implicit `condition: service_started` with restart: true).
+function rulePortsWithContainerNetworkMode(svc) {
+  const mode = svc.networkMode || "";
+  if (!/^(service|container):/.test(mode)) return [];
+  const nPorts = (svc.ports || []).length;
+  const nExpose = (svc.expose || []).length;
+  if (nPorts === 0 && nExpose === 0) return [];
+  const what = nPorts > 0
+    ? `${nPorts} port mapping${nPorts === 1 ? "" : "s"}`
+    : `${nExpose} \`expose\` entr${nExpose === 1 ? "y" : "ies"}`;
+  const daemonWord = nPorts > 0 ? "port publishing" : "port exposing";
+  const owner = mode.startsWith("service:") ? mode.slice("service:".length) : null;
+  return [{
+    level: "error",
+    rule: "ports-with-container-network-mode",
+    message: `declares ${what} under \`network_mode: ${mode}\` — the daemon refuses to create the container ("conflicting options: ${daemonWord} and the container type network mode"), and \`docker compose config\` never warns.`,
+    hint: owner
+      ? `Move the \`ports:\`${nExpose > 0 ? " / `expose:`" : ""} to \`${owner}\` — the shared sockets live in its network stack (the VPN-sidecar pattern). Compose already derives the startup dependency from \`service:\` mode by itself.`
+      : "Move the `ports:` / `expose:` to the container that owns the network namespace — the shared sockets live in its stack, not this service's.",
+  }];
+}
+
+// `network_mode: service:x` is a dependency in disguise: Compose resolves it
+// like a depends_on entry, so a name that is not in the file kills the whole
+// project already at `config` ('service "a" depends on undefined service
+// "x": invalid compose project' — measured; the message never says
+// network_mode, so the head-scratching is free). Same rename-missed-a-line
+// family as depends-on-unknown. Only the `service:` form is judged:
+// `container:<name>` points at a container OUTSIDE the file by design, and
+// an interpolated name comes from outside it too.
+function ruleNetworkModeUndefinedService(svc, model) {
+  const mode = svc.networkMode || "";
+  if (!mode.startsWith("service:")) return [];
+  const target = mode.slice("service:".length);
+  if (!target || INTERPOLATION_PATTERN.test(target)) return [];
+  if (model.services.some((s) => s.name === target)) return [];
+  return [{
+    level: "error",
+    rule: "network-mode-undefined-service",
+    message: `\`network_mode: service:${target}\` joins the network namespace of a service that is not in this file — Compose refuses the whole file ("depends on undefined service", already at \`config\`), and the error never mentions network_mode.`,
+    hint: "Fix the name (did a rename miss this line?), or use `container:<name>` if the namespace owner genuinely lives outside this file.",
+  }];
+}
+
 // The only sysctls a container may set are the ones that live in a kernel
 // namespace of its own: the IPC set (kernel.msg*/sem/shm*, fs.mqueue.*),
 // net.*, and kernel.domainname (UTS). Everything else — vm.*, fs.file-max,
@@ -1182,6 +1238,8 @@ const RULES = [
   rulePortsWithHostNetwork,
   rulePortsOnInternalNetwork,
   ruleNetworkModeWithNetworks,
+  rulePortsWithContainerNetworkMode,
+  ruleNetworkModeUndefinedService,
   ruleSysctlNotNamespaced,
   ruleSysctlInHostNamespace,
   ruleDangerousCaps,

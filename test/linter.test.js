@@ -2056,3 +2056,112 @@ test('a host-global sysctl under network_mode: host reports once, as not-namespa
   assert.equal(findings.filter((f) => f.rule === 'sysctl-not-namespaced').length, 1);
   assert.equal(findings.filter((f) => f.rule === 'sysctl-in-host-namespace').length, 0);
 });
+
+// --- ports-with-container-network-mode + network-mode-undefined-service (v0.39)
+
+test('ports under service: network_mode is an error naming the daemon refusal and the owner', () => {
+  const yaml = [
+    'services:',
+    '  vpn:',
+    '    image: qmcgaw/gluetun:v3.39',
+    '  app:',
+    '    image: app:1',
+    '    network_mode: service:vpn',
+    '    ports:',
+    '      - "8080:80"',
+  ].join('\n');
+  const { findings } = DS.lint(DS.parseCompose(yaml));
+  const hits = findings.filter((f) => f.rule === 'ports-with-container-network-mode');
+  assert.equal(hits.length, 1);
+  assert.equal(hits[0].service, 'app');
+  assert.equal(hits[0].level, 'error');
+  assert.match(hits[0].message, /port publishing and the container type network mode/);
+  assert.match(hits[0].message, /`docker compose config` never warns/);
+  assert.match(hits[0].hint, /Move the `ports:` to `vpn`/);
+});
+
+test('expose alone also dies under a container-type mode - the usually-inert key kills here', () => {
+  const yaml = [
+    'services:',
+    '  app:',
+    '    image: app:1',
+    '    network_mode: container:external-vpn',
+    '    expose:',
+    '      - 9090',
+  ].join('\n');
+  const { findings } = DS.lint(DS.parseCompose(yaml));
+  const hits = findings.filter((f) => f.rule === 'ports-with-container-network-mode');
+  assert.equal(hits.length, 1);
+  assert.match(hits[0].message, /port exposing and the container type network mode/);
+  // container:<name> owns nothing in this file - the hint stays generic
+  assert.match(hits[0].hint, /owns the network namespace/);
+});
+
+test('a host-port-less ports entry ("80") still counts - it publishes to an ephemeral port', () => {
+  const yaml = [
+    'services:',
+    '  vpn:',
+    '    image: vpn:1',
+    '  app:',
+    '    image: app:1',
+    '    network_mode: service:vpn',
+    '    ports:',
+    '      - "80"',
+  ].join('\n');
+  const { findings } = DS.lint(DS.parseCompose(yaml));
+  assert.equal(findings.filter((f) => f.rule === 'ports-with-container-network-mode').length, 1);
+});
+
+test('the correct VPN-sidecar pattern is quiet: ports on the namespace owner, none on the joiner', () => {
+  const yaml = [
+    'services:',
+    '  vpn:',
+    '    image: qmcgaw/gluetun:v3.39',
+    '    ports:',
+    '      - "8080:80"',
+    '  app:',
+    '    image: app:1',
+    '    network_mode: service:vpn',
+  ].join('\n');
+  const { findings } = DS.lint(DS.parseCompose(yaml));
+  assert.equal(findings.filter((f) => f.rule === 'ports-with-container-network-mode').length, 0);
+  // and host mode stays the other rule's business (silent discard, not refusal)
+  const host = ['services:', '  a:', '    image: a:1', '    network_mode: host', '    ports:', '      - "80:80"'].join('\n');
+  const hostFindings = DS.lint(DS.parseCompose(host)).findings;
+  assert.equal(hostFindings.filter((f) => f.rule === 'ports-with-container-network-mode').length, 0);
+  assert.equal(hostFindings.filter((f) => f.rule === 'ports-with-host-network').length, 1);
+});
+
+test('network_mode: service:ghost is an error - a dependency in disguise, dead already at config', () => {
+  const yaml = [
+    'services:',
+    '  app:',
+    '    image: app:1',
+    '    network_mode: service:ghost',
+  ].join('\n');
+  const { findings } = DS.lint(DS.parseCompose(yaml));
+  const hits = findings.filter((f) => f.rule === 'network-mode-undefined-service');
+  assert.equal(hits.length, 1);
+  assert.equal(hits[0].level, 'error');
+  assert.match(hits[0].message, /depends on undefined service/);
+  assert.match(hits[0].message, /never mentions network_mode/);
+});
+
+test('network-mode-undefined-service spares existing services, container: mode and interpolations', () => {
+  const yaml = [
+    'services:',
+    '  vpn:',
+    '    image: vpn:1',
+    '  a:',
+    '    image: a:1',
+    '    network_mode: service:vpn',
+    '  b:',
+    '    image: b:1',
+    '    network_mode: container:outside-this-file',
+    '  c:',
+    '    image: c:1',
+    '    network_mode: service:${NS_OWNER}',
+  ].join('\n');
+  const { findings } = DS.lint(DS.parseCompose(yaml));
+  assert.equal(findings.filter((f) => f.rule === 'network-mode-undefined-service').length, 0);
+});
