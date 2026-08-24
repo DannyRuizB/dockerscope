@@ -170,6 +170,8 @@ CI runs ESLint **and** this suite on every push and pull request.
 | `ports-with-host-network` | warn | a service combines `network_mode: host` with a `ports:` block — Docker silently discards the mappings, so the list in the file is a lie |
 | `ports-on-internal-network` | warn | a service publishes ports but every network it joins is `internal: true` — Docker never creates the host binding (no warning anywhere), so the published ports don't exist |
 | `network-mode-with-networks` | **error** | a service declares both `network_mode` and a non-empty `networks:` list — the two are mutually exclusive and Compose refuses the whole file |
+| `ports-with-container-network-mode` | **error** | `ports:` (or `expose:`) under `network_mode: service:x` / `container:y` — `compose config` says nothing and the daemon refuses the create ("conflicting options"); the mappings belong on the namespace owner (the VPN-sidecar pattern) |
+| `network-mode-undefined-service` | **error** | `network_mode: service:x` names a service that isn't in the file — a dependency in disguise, and Compose refuses the whole project already at `config` with an error that never mentions `network_mode` |
 | `sysctl-not-namespaced` | **error** | a `sysctls:` key outside the namespaced set (IPC, `fs.mqueue.*`, `net.*`, `kernel.domainname`) — `compose config` says nothing and the container is never created (runc: "not in a separate kernel namespace") |
 | `sysctl-in-host-namespace` | **error** | a namespaced sysctl on a service that hands that namespace to the host (`net.*` + `network_mode: host`, IPC + `ipc: host`, `kernel.domainname` + `uts: host`) — the container is never created |
 | `sensitive-host-mount` | **error** / warn | a sensitive host path (`/`, `/etc`, `/root`, `/proc`, `/var/lib/docker`…) is bind-mounted — error read-write, warn `:ro` |
@@ -193,6 +195,8 @@ CI runs ESLint **and** this suite on every push and pull request.
 | `undeclared-volume` | **error** | a service mounts a named volume missing from the top-level `volumes:` block — Compose refuses the whole file (bind mounts and anonymous volumes have no name to resolve) |
 | `undeclared-secret` | **error** | a service references a secret missing from the top-level `secrets:` block — Compose refuses the whole file (short and long `source:` forms) |
 | `no-restart` | warn | service has no `restart` policy |
+| `restart-not-a-string` | **error** | `restart: false` (or any non-string) kills the whole file — Compose requires a string; the unquoted word `no` is fine (YAML 1.2: it's the string `"no"`), the explicit boolean is not |
+| `restart-no-with-healthcheck` | warn | explicit `restart: "no"` on a service whose healthcheck nothing consumes — Docker never restarts unhealthy containers, so the probe labels a corpse; a `service_healthy` dependent or a disabled probe spares it |
 | `no-healthcheck` | warn | service has no `healthcheck` |
 | `no-memory-limit` | warn | service has no memory cap (`deploy.resources.limits.memory` or legacy `mem_limit`) — a leak can trigger the host's OOM killer |
 | `oom-kill-disable` | **error** / warn | `oom_kill_disable: true` — silently discarded on cgroups v2 hosts (the protection doesn't exist); on v1, without a memory limit the whole host hangs instead of the container (error) |
