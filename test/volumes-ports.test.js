@@ -15,6 +15,8 @@ test('parseCompose classifies named, bind and anonymous volumes', () => {
     '      - db-data:/var/lib/postgresql/data',
     '      - ./init.sql:/docker-entrypoint-initdb.d/init.sql:ro',
     '      - /tmp/cache',
+    '      - type: volume',
+    '        target: /var/anon',
     'volumes:',
     '  db-data:',
   ].join('\n');
@@ -26,6 +28,9 @@ test('parseCompose classifies named, bind and anonymous volumes', () => {
   assert.equal(vols[1].readonly, true);
   assert.equal(vols[2].type, 'anonymous');
   assert.equal(vols[2].target, '/tmp/cache');
+  // long-form `type: volume` without a source is anonymous too, not named
+  assert.equal(vols[3].type, 'anonymous');
+  assert.equal(vols[3].target, '/var/anon');
 });
 
 test('parseCompose surfaces named volumes at the top level', () => {

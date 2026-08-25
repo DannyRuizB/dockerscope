@@ -158,10 +158,12 @@ window.DockerScope.parseCompose = function (yamlText, fileMap) {
       buildArgs: parseEnvironment(
         raw.build && typeof raw.build === "object" ? raw.build.args : null
       ),
-      // Secret names the service references (short-form list of strings or
-      // long-form `{source: name, target: ...}`). Compared against the
-      // top-level `secrets:` block by the undeclared-secret rule.
-      secrets: parseServiceSecrets(raw.secrets),
+      // Secret / config names the service references (short-form list of
+      // strings or long-form `{source: name, target: ...}` — both fields
+      // share the exact same two shapes). Compared against the top-level
+      // `secrets:` / `configs:` blocks by the undeclared-* rules.
+      secrets: parseNamedRefs(raw.secrets),
+      configs: parseNamedRefs(raw.configs),
       dockerfile,
       stack: resolveStack(name, dockerfile, fileMap, warnings),
     });
@@ -196,6 +198,10 @@ window.DockerScope.parseCompose = function (yamlText, fileMap) {
     ? Object.keys(doc.secrets)
     : [];
 
+  const topConfigs = doc.configs && typeof doc.configs === "object"
+    ? Object.keys(doc.configs)
+    : [];
+
   return {
     services,
     networks: allNetworks,
@@ -206,13 +212,15 @@ window.DockerScope.parseCompose = function (yamlText, fileMap) {
     internalNetworks,
     declaredVolumes: topVolumes,
     declaredSecrets: topSecrets,
+    declaredConfigs: topConfigs,
     warnings,
   };
 };
 
-// Secrets a service mounts: short form is a list of names, long form a list
-// of `{source, target, ...}` (only `source` names the top-level secret).
-function parseServiceSecrets(value) {
+// Secrets or configs a service mounts: short form is a list of names, long
+// form a list of `{source, target, ...}` (only `source` names the top-level
+// entry). The two fields share the exact same grammar, so one parser serves both.
+function parseNamedRefs(value) {
   if (!Array.isArray(value)) return [];
   const out = [];
   for (const entry of value) {
@@ -450,7 +458,9 @@ function parseSingleVolume(entry, _topVolumeSet) {
   }
   if (entry && typeof entry === "object") {
     let type = "bind";
-    if (entry.type === "volume") type = "named";
+    // `type: volume` with no `source` is the long-form spelling of an
+    // anonymous volume — same storage-by-hash as the short-form `- /target`.
+    if (entry.type === "volume") type = entry.source != null ? "named" : "anonymous";
     else if (entry.type === "tmpfs") type = "tmpfs";
     else if (entry.type === "bind" || !entry.type) type = "bind";
     return {
