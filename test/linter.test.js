@@ -2165,3 +2165,87 @@ test('network-mode-undefined-service spares existing services, container: mode a
   const { findings } = DS.lint(DS.parseCompose(yaml));
   assert.equal(findings.filter((f) => f.rule === 'network-mode-undefined-service').length, 0);
 });
+
+// --- undeclared-config + anonymous-volume (v0.40) ---------------------------
+
+test('undeclared-config flags a service config missing from the top-level block', () => {
+  const yml = [
+    'services:',
+    '  app:',
+    '    image: nginx:1.27',
+    '    configs:',
+    '      - app_conf',
+  ].join('\n');
+  const found = DS.lint(DS.parseCompose(yml)).findings.filter((f) => f.rule === 'undeclared-config');
+  assert.equal(found.length, 1);
+  assert.equal(found[0].level, 'error');
+  assert.equal(found[0].service, 'app');
+  assert.match(found[0].message, /top-level `configs:` block/);
+});
+
+test('undeclared-config handles long-form entries (source:)', () => {
+  const yml = [
+    'services:',
+    '  app:',
+    '    image: nginx:1.27',
+    '    configs:',
+    '      - source: ghost_conf',
+    '        target: /etc/nginx/nginx.conf',
+  ].join('\n');
+  const found = DS.lint(DS.parseCompose(yml)).findings.filter((f) => f.rule === 'undeclared-config');
+  assert.equal(found.length, 1);
+  assert.match(found[0].message, /ghost_conf/);
+});
+
+test('undeclared-config stays quiet when every config is declared, and on interpolation', () => {
+  const declared = [
+    'services:',
+    '  app:',
+    '    image: nginx:1.27',
+    '    configs:',
+    '      - app_conf',
+    '      - ${EXTERNAL_CONF}',
+    'configs:',
+    '  app_conf:',
+    '    file: ./nginx.conf',
+  ].join('\n');
+  assert.ok(!DS.lint(DS.parseCompose(declared)).findings.some((f) => f.rule === 'undeclared-config'));
+
+  const none = ['services:', '  app:', '    image: nginx:1.27'].join('\n');
+  assert.ok(!DS.lint(DS.parseCompose(none)).findings.some((f) => f.rule === 'undeclared-config'));
+});
+
+test('anonymous-volume flags both spellings — short form and long form without source', () => {
+  const yml = [
+    'services:',
+    '  app:',
+    '    image: nginx:1.27',
+    '    volumes:',
+    '      - /data',
+    '      - type: volume',
+    '        target: /cache',
+  ].join('\n');
+  const found = DS.lint(DS.parseCompose(yml)).findings.filter((f) => f.rule === 'anonymous-volume');
+  assert.equal(found.length, 2);
+  for (const f of found) assert.equal(f.level, 'warn');
+  assert.match(found[0].message, /\/data/);
+  assert.match(found[1].message, /\/cache/);
+  // the trap in one line: redeploys keep the data, `down` + `up` loses it
+  assert.match(found[0].message, /survives redeploys but not `down`/);
+});
+
+test('anonymous-volume spares named, bind and tmpfs mounts', () => {
+  const yml = [
+    'services:',
+    '  app:',
+    '    image: nginx:1.27',
+    '    volumes:',
+    '      - data:/data',
+    '      - ./conf:/etc/nginx:ro',
+    '      - type: tmpfs',
+    '        target: /scratch',
+    'volumes:',
+    '  data:',
+  ].join('\n');
+  assert.ok(!DS.lint(DS.parseCompose(yml)).findings.some((f) => f.rule === 'anonymous-volume'));
+});

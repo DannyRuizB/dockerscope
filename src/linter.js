@@ -1195,6 +1195,30 @@ function ruleUndeclaredVolume(svc, model) {
   return findings;
 }
 
+// A volume entry with no source — short-form `- /data`, or long-form
+// `type: volume` with only a target — creates an *anonymous* volume: storage
+// addressed by a 64-hex hash instead of a name. Measured against a real
+// daemon (29.1.3): the data survives `up --force-recreate` (Compose carries
+// anonymous volumes over to the new container), which is exactly what makes
+// the trap intermittent — redeploys work for weeks, then one
+// `docker compose down` breaks the link. The volume stays on disk as an
+// untraceable dangling hash, the next `up` mounts a fresh empty one, and the
+// service starts blank with no error anywhere (measured: marker file gone,
+// new hash mounted). `docker compose config` accepts the file without a word.
+function ruleAnonymousVolume(svc) {
+  const findings = [];
+  for (const v of svc.volumes) {
+    if (v.type !== "anonymous" || !v.target) continue;
+    findings.push({
+      level: "warn",
+      rule: "anonymous-volume",
+      message: `mounts an anonymous volume at \`${v.target}\` — the data survives redeploys but not \`down\`: the next \`up\` mounts a fresh empty volume, and the old one is stranded on disk as a nameless dangling hash.`,
+      hint: `Name it (\`data:${v.target}\` plus a top-level \`volumes:\` entry) so the data has an owner — or declare it scratch space explicitly with \`tmpfs\`.`,
+    });
+  }
+  return findings;
+}
+
 // A service can only mount a secret declared in the top-level `secrets:`
 // block — Compose refuses the whole file otherwise ("service ... refers to
 // undefined secret ..."). The classic bite: the top-level block is renamed
@@ -1212,6 +1236,28 @@ function ruleUndeclaredSecret(svc, model) {
       rule: "undeclared-secret",
       message: `references secret \`${s}\`, which is not declared in the top-level \`secrets:\` block — Compose refuses the whole file.`,
       hint: `Declare it (\`secrets: { ${s}: { file: ./${s}.txt } }\`, or \`external: true\` if it already exists) or fix the name.`,
+    });
+  }
+  return findings;
+}
+
+// The fourth member of the undefined-reference family: a service can only
+// mount a config declared in the top-level `configs:` block. Measured
+// (Compose 29.1.3): the project dies already at `config` — 'service "app"
+// refers to undefined config app_conf: invalid compose project' — the same
+// wording and the same early stage as secrets. Interpolated names are
+// skipped (the value comes from outside the file).
+function ruleUndeclaredConfig(svc, model) {
+  const declared = new Set(model.declaredConfigs || []);
+  const findings = [];
+  for (const c of svc.configs) {
+    if (declared.has(c)) continue;
+    if (String(c).includes("${")) continue;
+    findings.push({
+      level: "error",
+      rule: "undeclared-config",
+      message: `references config \`${c}\`, which is not declared in the top-level \`configs:\` block — Compose refuses the whole project already at \`config\`.`,
+      hint: `Declare it (\`configs: { ${c}: { file: ./${c}.conf } }\`, or \`external: true\` if it already exists) or fix the name.`,
     });
   }
   return findings;
@@ -1265,6 +1311,8 @@ const RULES = [
   ruleUndeclaredNetwork,
   ruleUndeclaredVolume,
   ruleUndeclaredSecret,
+  ruleUndeclaredConfig,
+  ruleAnonymousVolume,
 ];
 
 window.DockerScope.lint = function (model) {
