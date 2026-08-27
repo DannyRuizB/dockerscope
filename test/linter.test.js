@@ -267,6 +267,43 @@ test('dangerous-device spares purpose-built nodes, bare-path form and CDI names'
   assert.equal(found.length, 0);
 });
 
+test('shared-namespace: pid/ipc container-sharing and ipc:shareable each warn', () => {
+  const yaml = [
+    'services:',
+    '  a:',
+    '    image: alpine:3.20',
+    '    pid: "service:victim"',
+    '    ipc: "container:victim"',
+    '  b:',
+    '    image: alpine:3.20',
+    '    ipc: shareable',
+    '  victim:',
+    '    image: alpine:3.20',
+  ].join('\n');
+  const found = DS.lint(DS.parseCompose(yaml)).findings.filter((f) => f.rule === 'shared-namespace');
+  // a: two findings (pid + ipc), b: one (shareable) = 3
+  assert.equal(found.length, 3);
+  assert.ok(found.some((f) => f.service === 'a' && /process \(PID\) namespace/.test(f.message)));
+  assert.ok(found.some((f) => f.service === 'a' && /IPC namespace/.test(f.message)));
+  assert.ok(found.some((f) => f.service === 'b' && /shareable/.test(f.message)));
+});
+
+test('shared-namespace spares host (host-namespace owns it), private/none, and network_mode', () => {
+  const yaml = [
+    'services:',
+    '  x:',
+    '    image: alpine:3.20',
+    '    pid: host',              // host-namespace's job, not this rule's
+    '    ipc: none',              // fine
+    '    network_mode: "service:y"',  // the network rules own network_mode
+    '  y:',
+    '    image: alpine:3.20',
+    '    ipc: private',           // the default, fine
+  ].join('\n');
+  const found = DS.lint(DS.parseCompose(yaml)).findings.filter((f) => f.rule === 'shared-namespace');
+  assert.equal(found.length, 0);
+});
+
 test('no-new-privileges warns on cap_add without the security_opt', () => {
   const yaml = [
     'services:',
@@ -647,7 +684,7 @@ test('the insecure sample trips every security rule at once', () => {
   const rules = new Set(DS.lint(DS.parseCompose(sample('insecure.yml'))).findings.map((f) => f.rule));
   for (const r of [
     'image-latest', 'docker-socket-mount', 'privileged', 'host-namespace',
-    'dangerous-cap', 'sensitive-host-mount', 'dangerous-device', 'no-new-privileges',
+    'dangerous-cap', 'sensitive-host-mount', 'dangerous-device', 'shared-namespace', 'no-new-privileges',
     'env-secret', 'port-public', 'security-unconfined', 'build-arg-secret', 'command-secret',
     'port-conflict', 'duplicate-container-name', 'depends-on-unknown',
     'depends-on-ignores-healthcheck', 'undeclared-network', 'undeclared-volume',

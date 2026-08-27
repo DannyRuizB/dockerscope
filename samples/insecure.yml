@@ -69,6 +69,8 @@ services:
     image: grafana/grafana:11.1.0
     ports:
       - "127.0.0.1:3000:3000"        # ports-on-internal-network (warn) — the only network is internal, the mapping is dead
+    pid: "service:app"               # shared-namespace (warn) — sees app's processes and reads its /proc/<pid>/environ
+    ipc: "shareable"                 # shared-namespace (warn) — invites any container into its IPC namespace
     networks:
       - lockdown
 
