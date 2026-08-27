@@ -664,6 +664,69 @@ function ruleSensitiveHostMount(svc) {
   return findings;
 }
 
+// `devices:` skips the privileged flag but can hand over the same power one
+// node at a time — sensitive-host-mount's twin for the key nobody reviews.
+// A raw block device is the host filesystem BENEATH every permission check:
+// read it offline and every file on it (shadow, keys, tokens) is yours;
+// write it and you can edit them. /dev/mem, /dev/kmem and /dev/port are
+// physical/kernel memory and raw I/O ports; /dev/kmsg leaks kernel pointer
+// values that defeat KASLR (dmesg_restrict exists for the same reason).
+// Measured against a real daemon (29.1.3): `docker compose config` accepts
+// the mapping without a word, and a DEFAULT container — unprivileged, stock
+// capability set — read sector 0 of the host's /dev/sda straight through it
+// (dd rc 0). The device cgroup allows what the mapping names; that is the
+// feature. Spared on purpose: the narrow, purpose-built nodes `devices:`
+// exists for (/dev/dri, /dev/snd, /dev/net/tun, /dev/fuse, /dev/ttyUSB*,
+// /dev/kvm) and CDI names, which carry no host path at all.
+const RAW_BLOCK_DEVICE_RE = new RegExp(
+  "^/dev/(sd[a-z]+\\d*|hd[a-z]+\\d*|vd[a-z]+\\d*|xvd[a-z]+\\d*" +
+  "|nvme\\d+n\\d+(p\\d+)?|mmcblk\\d+(p\\d+)?|loop\\d+|dm-\\d+" +
+  "|mapper/[^/]+|disk/by-[^/]+/[^/]+)$"
+);
+const KERNEL_MEMORY_DEVICES = {
+  "/dev/mem": "physical memory",
+  "/dev/kmem": "kernel virtual memory",
+  "/dev/port": "raw I/O ports",
+};
+
+function ruleDangerousDevice(svc) {
+  const findings = [];
+  for (const d of svc.devices) {
+    const src = d.source;
+    if (!src || !src.startsWith("/")) continue; // CDI name: no host path to judge
+    if (src === "/dev") {
+      findings.push({
+        level: "error",
+        rule: "dangerous-device",
+        message: "maps the whole of `/dev` into the container.",
+        hint: "Every disk, memory device and console the host has, in one line. Map the single device node the service actually needs.",
+      });
+    } else if (KERNEL_MEMORY_DEVICES[src]) {
+      findings.push({
+        level: "error",
+        rule: "dangerous-device",
+        message: `maps \`${src}\` (${KERNEL_MEMORY_DEVICES[src]}) into the container.`,
+        hint: "Reading it dumps host memory; writing it patches the running kernel. Nothing outside a lab debugger needs this device.",
+      });
+    } else if (RAW_BLOCK_DEVICE_RE.test(src)) {
+      findings.push({
+        level: "error",
+        rule: "dangerous-device",
+        message: `maps the raw block device \`${src}\` into the container${d.permissions ? ` (\`:${d.permissions}\`)` : ""}.`,
+        hint: `A raw disk is the host filesystem beneath every permission check — reading it offline yields every file on it${d.permissions === "r" ? ", so `:r` does not soften this" : ""}. Mount the specific path the service needs, or keep the device on the host.`,
+      });
+    } else if (src === "/dev/kmsg") {
+      findings.push({
+        level: "warn",
+        rule: "dangerous-device",
+        message: "maps `/dev/kmsg` (the kernel log) into the container.",
+        hint: "Kernel messages carry pointer values that defeat KASLR, plus hardware and audit details — `dmesg_restrict` exists precisely to hide them. Ship logs from the host instead.",
+      });
+    }
+  }
+  return findings;
+}
+
 // Added capabilities survive across setuid/sudo binaries unless the kernel is
 // told not to elevate: `no-new-privileges` closes that escalation path and is
 // close to free for services that don't rely on setuid.
@@ -1290,6 +1353,7 @@ const RULES = [
   ruleSysctlInHostNamespace,
   ruleDangerousCaps,
   ruleSensitiveHostMount,
+  ruleDangerousDevice,
   ruleNoNewPrivileges,
   ruleNoCapDrop,
   ruleNoReadOnly,
