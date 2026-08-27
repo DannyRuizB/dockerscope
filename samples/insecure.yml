@@ -38,6 +38,8 @@ services:
     volumes:
       - /etc:/host-etc               # sensitive-host-mount (error) — read-write host config
       - /proc:/host-proc:ro          # sensitive-host-mount (warn) — read-only kernel surface
+    devices:
+      - /dev/sda:/dev/sda:r          # dangerous-device (error) — the raw disk IS the host fs, and :r doesn't soften it
 
   # Database published to the world with a hardcoded password.
   db:

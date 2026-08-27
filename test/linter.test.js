@@ -217,6 +217,56 @@ test('sensitive-host-mount catches subpaths and bare / but not docker.sock', () 
   assert.ok(found.every((f) => f.level === 'error'));
 });
 
+test('dangerous-device: raw disks, kernel memory and /dev are errors; kmsg warns', () => {
+  const yaml = [
+    'services:',
+    '  x:',
+    '    image: alpine:3.20',
+    '    devices:',
+    '      - /dev/sda:/dev/sda',
+    '      - /dev/nvme0n1p2:/dev/nvme0n1p2',
+    '      - /dev/mapper/vg0-root:/dev/mapper/vg0-root',
+    '      - /dev/mem:/dev/mem',
+    '      - /dev:/dev',
+    '      - /dev/kmsg:/dev/kmsg',
+  ].join('\n');
+  const found = DS.lint(DS.parseCompose(yaml)).findings.filter((f) => f.rule === 'dangerous-device');
+  assert.equal(found.length, 6);
+  assert.equal(found.filter((f) => f.level === 'error').length, 5);
+  assert.ok(found.some((f) => f.message.includes('/dev/kmsg') && f.level === 'warn'));
+});
+
+test('dangerous-device: :r does not soften a raw disk, and the hint says so', () => {
+  const yaml = [
+    'services:',
+    '  x:',
+    '    image: alpine:3.20',
+    '    devices:',
+    '      - /dev/sda:/dev/sda:r',
+  ].join('\n');
+  const found = DS.lint(DS.parseCompose(yaml)).findings.filter((f) => f.rule === 'dangerous-device');
+  assert.equal(found.length, 1);
+  assert.equal(found[0].level, 'error');
+  assert.match(found[0].hint, /:r/);
+});
+
+test('dangerous-device spares purpose-built nodes, bare-path form and CDI names', () => {
+  const yaml = [
+    'services:',
+    '  x:',
+    '    image: alpine:3.20',
+    '    devices:',
+    '      - /dev/dri:/dev/dri',
+    '      - /dev/snd:/dev/snd',
+    '      - /dev/net/tun:/dev/net/tun',
+    '      - /dev/ttyUSB0:/dev/ttyUSB0',
+    '      - /dev/fuse',
+    '      - nvidia.com/gpu=all',
+  ].join('\n');
+  const found = DS.lint(DS.parseCompose(yaml)).findings.filter((f) => f.rule === 'dangerous-device');
+  assert.equal(found.length, 0);
+});
+
 test('no-new-privileges warns on cap_add without the security_opt', () => {
   const yaml = [
     'services:',
@@ -597,7 +647,7 @@ test('the insecure sample trips every security rule at once', () => {
   const rules = new Set(DS.lint(DS.parseCompose(sample('insecure.yml'))).findings.map((f) => f.rule));
   for (const r of [
     'image-latest', 'docker-socket-mount', 'privileged', 'host-namespace',
-    'dangerous-cap', 'sensitive-host-mount', 'no-new-privileges',
+    'dangerous-cap', 'sensitive-host-mount', 'dangerous-device', 'no-new-privileges',
     'env-secret', 'port-public', 'security-unconfined', 'build-arg-secret', 'command-secret',
     'port-conflict', 'duplicate-container-name', 'depends-on-unknown',
     'depends-on-ignores-healthcheck', 'undeclared-network', 'undeclared-volume',

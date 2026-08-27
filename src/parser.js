@@ -9,6 +9,7 @@
 //     healthcheck: object|null,
 //     volumes: [{type, source, target, readonly}],  // type: "named" | "bind" | "anonymous"
 //     tmpfs: [string],               // service-level `tmpfs:` targets (options stripped)
+//     devices: [{source, target, permissions}],  // `devices:` mappings; CDI names keep source, null target
 //     privileged: boolean,
 //     capAdd: [string],               // upper-cased Linux capabilities from cap_add
 //     networkMode: string|null,       // e.g. "host"
@@ -118,6 +119,11 @@ window.DockerScope.parseCompose = function (yamlText, fileMap) {
       // distinct from volumes long-form `type: tmpfs`. Only the target
       // paths are kept; mount options play no part in the rules.
       tmpfs: parseTmpfs(raw.tmpfs),
+      // `devices:` — short strings "HOST[:CONTAINER[:permissions]]" (a bare
+      // path maps to itself), or a CDI name ("vendor.com/class=name") that
+      // names no host path at all. The linter only judges entries with a
+      // host path; CDI entries keep the whole string as source, null target.
+      devices: parseDevices(raw.devices),
       privileged: raw.privileged === true,
       readOnly: raw.read_only === true,
       // `oom_kill_disable:` — only an explicit true matters to the linter.
@@ -498,6 +504,31 @@ function parseTmpfs(value) {
     if (typeof e !== "string") continue;
     const target = e.split(":")[0].trim();
     if (target) out.push(target);
+  }
+  return out;
+}
+
+// `devices:` entries per the compose spec: strings, either a device mapping
+// "HOST[:CONTAINER[:permissions]]" (a bare host path maps to itself, like
+// the docker CLI) or a CDI name ("vendor.com/gpu=all") that names no host
+// path — those keep the whole string as source with a null target, and the
+// linter skips what has no host path to judge.
+function parseDevices(value) {
+  if (!Array.isArray(value)) return [];
+  const out = [];
+  for (const e of value) {
+    if (typeof e !== "string" || !e.trim()) continue;
+    const s = e.trim();
+    if (!s.startsWith("/")) {
+      out.push({ source: s, target: null, permissions: null });
+      continue;
+    }
+    const parts = s.split(":");
+    out.push({
+      source: parts[0],
+      target: parts[1] || parts[0],
+      permissions: parts[2] || null,
+    });
   }
   return out;
 }
