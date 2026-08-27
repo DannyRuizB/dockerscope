@@ -376,6 +376,47 @@ function ruleHostNamespace(svc) {
   return findings;
 }
 
+// host-namespace flags sharing the HOST's namespace; this flags sharing
+// ANOTHER CONTAINER's. `pid: "container:x"` / `"service:x"` puts this
+// service inside x's PID namespace: it sees every process x runs and can
+// read /proc/<pid>/environ — x's environment, secrets and all — plus signal
+// or (with the cap) ptrace them. `ipc: "container:x"` / `"service:x"` shares
+// SysV IPC and POSIX shared memory with x; `ipc: "shareable"` is the other
+// side of that door, inviting any container to join this one's IPC namespace.
+// Real uses exist (a debug sidecar, a deliberately shared-memory pair), so
+// warn — but the isolation a container is FOR is gone for that pair, and a
+// compromise of either reaches straight into the other. network_mode's
+// container/service forms are left to the network rules that already own them.
+function ruleSharedNamespace(svc) {
+  const findings = [];
+  const pairs = [
+    ["pid", svc.pidMode, "process (PID) namespace", "read its /proc, and signal or trace its processes"],
+    ["ipc", svc.ipcMode, "IPC namespace", "reach its shared memory and SysV segments"],
+  ];
+  for (const [field, value, nsName, reach] of pairs) {
+    if (typeof value !== "string") continue;
+    const isContainerShare = /^(container|service):/.test(value);
+    const isShareable = field === "ipc" && value === "shareable";
+    if (!isContainerShare && !isShareable) continue;
+    if (isShareable) {
+      findings.push({
+        level: "warn",
+        rule: "shared-namespace",
+        message: "sets `ipc: shareable` — invites any container to join its IPC namespace.",
+        hint: "Only set this for a container you deliberately share shared memory with; the default private IPC namespace is the safe choice.",
+      });
+    } else {
+      findings.push({
+        level: "warn",
+        rule: "shared-namespace",
+        message: `shares another container's ${nsName} (\`${field}: ${value}\`).`,
+        hint: `The isolation a container is for is gone for that pair: this service can ${reach}. Prefer the default private ${field} namespace unless a debug sidecar or shared-memory design genuinely needs it.`,
+      });
+    }
+  }
+  return findings;
+}
+
 // Two mounts onto one container path never deploy: the daemon refuses to
 // create the container ("Duplicate mount point") — verified against a real
 // daemon; volume+volume, bind+volume and tmpfs+volume all die, and a
@@ -1344,6 +1385,7 @@ const RULES = [
   rulePrivileged,
   ruleExplicitRootUser,
   ruleHostNamespace,
+  ruleSharedNamespace,
   rulePortsWithHostNetwork,
   rulePortsOnInternalNetwork,
   ruleNetworkModeWithNetworks,
