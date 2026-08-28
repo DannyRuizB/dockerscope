@@ -87,6 +87,13 @@ window.DockerScope.parseCompose = function (yamlText, fileMap) {
       ports: parsePorts(raw.ports, warnings, name),
       environment: parseEnvironment(raw.environment),
       restart: typeof raw.restart === "string" ? raw.restart : null,
+      // stop_signal is the signal `docker stop` sends first. A string
+      // ("SIGTERM", "SIGQUIT") or an int (15); normalized to a trimmed
+      // string so the linter can spot the uncatchable ones (SIGKILL/SIGSTOP).
+      stopSignal:
+        typeof raw.stop_signal === "string" || typeof raw.stop_signal === "number"
+          ? String(raw.stop_signal).trim()
+          : null,
       // `restart: false` LOOKS like a reasonable spelling of "don't restart"
       // and kills the whole file: compose rejects any non-string restart
       // (measured: "services.app.restart must be a string"). Surfaced as a

@@ -2407,3 +2407,36 @@ test('completed-dependency-restarts leaves other conditions and unknown targets 
   // the dangling name still belongs to depends-on-unknown
   assert.ok(found.some((f) => f.rule === 'depends-on-unknown' && /ghost/.test(f.message)));
 });
+
+test('stop-signal-uncatchable: SIGKILL and its numeric string both warn, and name the reason', () => {
+  const yaml = [
+    'services:',
+    '  db:',
+    '    image: postgres:16',
+    '    stop_signal: SIGKILL',
+    '  q:',
+    '    image: redis:7',
+    '    stop_signal: "9"',
+    '  frozen:',
+    '    image: alpine:3.20',
+    '    stop_signal: sigstop',
+  ].join('\n');
+  const found = DS.lint(DS.parseCompose(yaml)).findings.filter((f) => f.rule === 'stop-signal-uncatchable');
+  assert.equal(found.length, 3);
+  assert.ok(found.every((f) => f.level === 'warn'));
+  assert.ok(found.some((f) => f.service === 'db' && /cannot be caught/.test(f.message)));
+  assert.ok(found.some((f) => f.service === 'q'));
+  assert.ok(found.some((f) => f.service === 'frozen' && /FREEZES/.test(f.message)));
+});
+
+test('stop-signal-uncatchable spares catchable signals, absence and interpolation', () => {
+  const yaml = [
+    'services:',
+    '  a: { image: alpine:3.20, stop_signal: SIGTERM }',
+    '  b: { image: alpine:3.20, stop_signal: SIGQUIT }',
+    '  c: { image: alpine:3.20 }',
+    '  d: { image: alpine:3.20, stop_signal: "${STOP_SIG}" }',
+  ].join('\n');
+  const found = DS.lint(DS.parseCompose(yaml)).findings.filter((f) => f.rule === 'stop-signal-uncatchable');
+  assert.equal(found.length, 0);
+});

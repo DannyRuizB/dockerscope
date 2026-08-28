@@ -1267,6 +1267,37 @@ function ruleCompletedDependencyRestarts(svc, model) {
   return findings;
 }
 
+// stop_signal is the signal `docker stop` sends before the grace period runs
+// out — and SIGKILL / SIGSTOP are the two signals a process CANNOT catch or
+// handle. Setting either defeats the whole point of stop_signal: the
+// container never runs its shutdown path (no buffer flush, no connection
+// drain, no in-flight transaction committed) — SIGKILL kills it outright,
+// SIGSTOP just freezes it so `docker stop` waits the full grace period and
+// then SIGKILLs anyway. A stateful container (a database, a queue) risks a
+// corrupt or torn write on every stop. `compose config` accepts it without a
+// word (measured). Recognizes the name (SIG-prefixed or not, case-insensitive)
+// and the numeric form (9 = KILL, 19 = STOP on Linux); interpolations are
+// skipped (the value comes from outside the file).
+const UNCATCHABLE_SIGNALS = new Set(["SIGKILL", "KILL", "9", "SIGSTOP", "STOP", "19"]);
+
+function ruleStopSignalUncatchable(svc) {
+  const sig = svc.stopSignal;
+  if (!sig || sig.includes("${")) return [];
+  if (!UNCATCHABLE_SIGNALS.has(sig.toUpperCase())) return [];
+  const isStop = /^(sig)?stop$/i.test(sig) || sig === "19";
+  const why = isStop
+    ? "SIGSTOP only FREEZES the process, so `docker stop` waits the whole grace period and then SIGKILLs it anyway"
+    : "SIGKILL cannot be caught, so the container never runs its shutdown path";
+  return [
+    {
+      level: "warn",
+      rule: "stop-signal-uncatchable",
+      message: `\`stop_signal: ${sig}\` — ${why}: no buffer flush, no connection drain, no in-flight transaction committed. A stateful container risks a torn write on every stop.`,
+      hint: "Use a signal the process actually handles (the default SIGTERM, or SIGQUIT / SIGINT / a signal your app documents).",
+    },
+  ];
+}
+
 // healthcheck.test in list form must start with CMD, CMD-SHELL or NONE.
 // `test: ["curl", "-f", …]` looks perfectly plausible — and Compose refuses
 // the whole file. Joins the file-rejecting family (depends-on-unknown,
@@ -1446,6 +1477,7 @@ const RULES = [
   ruleDependsOnIgnoresHealthcheck,
   ruleServiceHealthyNoHealthcheck,
   ruleCompletedDependencyRestarts,
+  ruleStopSignalUncatchable,
   ruleHealthcheckTestInvalid,
   ruleUndeclaredNetwork,
   ruleUndeclaredVolume,
