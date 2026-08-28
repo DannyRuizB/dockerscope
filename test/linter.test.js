@@ -2336,3 +2336,74 @@ test('anonymous-volume spares named, bind and tmpfs mounts', () => {
   ].join('\n');
   assert.ok(!DS.lint(DS.parseCompose(yml)).findings.some((f) => f.rule === 'anonymous-volume'));
 });
+
+test('completed-dependency-restarts: a one-shot wait on an always/unless-stopped dependency errors', () => {
+  const yaml = [
+    'services:',
+    '  init:',
+    '    image: alpine:3.20',
+    '    restart: always',
+    '  seed:',
+    '    image: alpine:3.20',
+    '    restart: unless-stopped',
+    '  app:',
+    '    image: alpine:3.20',
+    '    depends_on:',
+    '      init:',
+    '        condition: service_completed_successfully',
+    '      seed:',
+    '        condition: service_completed_successfully',
+  ].join('\n');
+  const found = DS.lint(DS.parseCompose(yaml)).findings.filter((f) => f.rule === 'completed-dependency-restarts');
+  assert.equal(found.length, 2);
+  assert.ok(found.every((f) => f.service === 'app' && f.level === 'error'));
+  assert.ok(found.some((f) => /`init` has `restart: always`/.test(f.message)));
+  assert.ok(found.some((f) => /`seed` has `restart: unless-stopped`/.test(f.message)));
+});
+
+test('completed-dependency-restarts spares on-failure, "no", and absent restart', () => {
+  const yaml = [
+    'services:',
+    '  retry:',
+    '    image: alpine:3.20',
+    '    restart: on-failure',
+    '  oneshot:',
+    '    image: alpine:3.20',
+    '    restart: "no"',
+    '  plain:',
+    '    image: alpine:3.20',
+    '  app:',
+    '    image: alpine:3.20',
+    '    depends_on:',
+    '      retry:',
+    '        condition: service_completed_successfully',
+    '      oneshot:',
+    '        condition: service_completed_successfully',
+    '      plain:',
+    '        condition: service_completed_successfully',
+  ].join('\n');
+  const found = DS.lint(DS.parseCompose(yaml)).findings.filter((f) => f.rule === 'completed-dependency-restarts');
+  assert.equal(found.length, 0);
+});
+
+test('completed-dependency-restarts leaves other conditions and unknown targets alone', () => {
+  const yaml = [
+    'services:',
+    '  db:',
+    '    image: postgres:16',
+    '    restart: always',
+    '    healthcheck:',
+    '      test: ["CMD", "pg_isready"]',
+    '  app:',
+    '    image: alpine:3.20',
+    '    depends_on:',
+    '      db:',
+    '        condition: service_healthy',
+    '      ghost:',
+    '        condition: service_completed_successfully',
+  ].join('\n');
+  const found = DS.lint(DS.parseCompose(yaml)).findings;
+  assert.equal(found.filter((f) => f.rule === 'completed-dependency-restarts').length, 0);
+  // the dangling name still belongs to depends-on-unknown
+  assert.ok(found.some((f) => f.rule === 'depends-on-unknown' && /ghost/.test(f.message)));
+});

@@ -1235,6 +1235,38 @@ function ruleServiceHealthyNoHealthcheck(svc, model) {
   return findings;
 }
 
+// `condition: service_completed_successfully` waits for the dependency to
+// EXIT with code 0 — but `restart: always` / `unless-stopped` is the promise
+// that the container never stays exited. Measured against the real daemon
+// (compose v5.3.1): with a long-running dependency the dependent sits in
+// `created` forever; and even when the dependency exits 0, the restart
+// policy resurrects it BEFORE Compose ever counts the completion
+// (RestartCount climbed to 9 while the dependent never started). `docker
+// compose config` accepts the file without a word and `up` just hangs — a
+// silent-hang cousin of the no-op-silencioso family. `restart: on-failure`
+// is exempt on purpose: it only restarts on non-zero exits, which is exactly
+// retry-until-success for a one-shot job. Unknown targets stay quiet
+// (depends-on-unknown owns them); interpolated or non-string restart values
+// are skipped (restart-not-a-string owns the invalid ones).
+function ruleCompletedDependencyRestarts(svc, model) {
+  const byName = new Map(model.services.map((s) => [s.name, s]));
+  const findings = [];
+  for (const [dep, cond] of Object.entries(svc.dependsOnConditions || {})) {
+    if (cond !== "service_completed_successfully") continue;
+    const target = byName.get(dep);
+    if (!target) continue;
+    const restart = typeof target.restart === "string" ? target.restart.trim() : null;
+    if (restart !== "always" && restart !== "unless-stopped") continue;
+    findings.push({
+      level: "error",
+      rule: "completed-dependency-restarts",
+      message: `\`depends_on: { ${dep}: { condition: service_completed_successfully } }\` — but \`${dep}\` has \`restart: ${restart}\`, the promise that it never stays exited: even a clean exit 0 is resurrected before Compose counts the completion, so this service waits in \`created\` forever and \`up\` hangs without a word (measured against the daemon).`,
+      hint: `Give \`${dep}\` \`restart: "no"\` (the default) or \`on-failure\` — retry-until-success for a one-shot job — or relax the condition to \`service_started\`.`,
+    });
+  }
+  return findings;
+}
+
 // healthcheck.test in list form must start with CMD, CMD-SHELL or NONE.
 // `test: ["curl", "-f", …]` looks perfectly plausible — and Compose refuses
 // the whole file. Joins the file-rejecting family (depends-on-unknown,
@@ -1413,6 +1445,7 @@ const RULES = [
   ruleDependsOnProfileGated,
   ruleDependsOnIgnoresHealthcheck,
   ruleServiceHealthyNoHealthcheck,
+  ruleCompletedDependencyRestarts,
   ruleHealthcheckTestInvalid,
   ruleUndeclaredNetwork,
   ruleUndeclaredVolume,
