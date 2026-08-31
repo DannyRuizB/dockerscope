@@ -685,7 +685,7 @@ test('the insecure sample trips every security rule at once', () => {
   for (const r of [
     'image-latest', 'docker-socket-mount', 'privileged', 'host-namespace',
     'dangerous-cap', 'sensitive-host-mount', 'dangerous-device', 'shared-namespace', 'no-new-privileges',
-    'env-secret', 'port-public', 'security-unconfined', 'build-arg-secret', 'command-secret',
+    'env-secret', 'secret-empty-when-unset', 'port-public', 'security-unconfined', 'build-arg-secret', 'command-secret',
     'port-conflict', 'duplicate-container-name', 'depends-on-unknown',
     'depends-on-ignores-healthcheck', 'undeclared-network', 'undeclared-volume',
     'container-name-with-replicas', 'healthcheck-no-start-period',
@@ -2439,4 +2439,86 @@ test('stop-signal-uncatchable spares catchable signals, absence and interpolatio
   ].join('\n');
   const found = DS.lint(DS.parseCompose(yaml)).findings.filter((f) => f.rule === 'stop-signal-uncatchable');
   assert.equal(found.length, 0);
+});
+
+test('secret-empty-when-unset: an unguarded ${VAR} secret warns, and a :? guard silences everything', () => {
+  const yaml = [
+    'services:',
+    '  db:',
+    '    image: postgres:16',
+    '    environment:',
+    '      POSTGRES_PASSWORD: ${DB_PASSWORD}',
+    '  cache:',
+    '    image: redis:7',
+    '    environment:',
+    '      REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD is not set}',
+  ].join('\n');
+  const findings = DS.lint(DS.parseCompose(yaml)).findings;
+  const unguarded = findings.filter((f) => f.rule === 'secret-empty-when-unset');
+  assert.equal(unguarded.length, 1);
+  assert.equal(unguarded[0].service, 'db');
+  assert.equal(unguarded[0].level, 'warn');
+  assert.ok(/empty string/.test(unguarded[0].message));
+  // the guarded form must trip NOTHING — it used to false-positive as env-secret
+  assert.ok(!findings.some((f) => f.service === 'cache' && (f.rule === 'env-secret' || f.rule === 'secret-empty-when-unset')));
+});
+
+test('secret-empty-when-unset: an empty default (${VAR:-}) is as unguarded as no modifier', () => {
+  const yaml = [
+    'services:',
+    '  db:',
+    '    image: postgres:16',
+    '    environment:',
+    '      - POSTGRES_PASSWORD=${DB_PASSWORD:-}',
+  ].join('\n');
+  const found = DS.lint(DS.parseCompose(yaml)).findings.filter((f) => f.rule === 'secret-empty-when-unset');
+  assert.equal(found.length, 1);
+  assert.equal(found[0].level, 'warn');
+});
+
+test('secret-empty-when-unset spares non-secret keys and compound values', () => {
+  const yaml = [
+    'services:',
+    '  app:',
+    '    image: alpine:3.20',
+    '    environment:',
+    '      LOG_LEVEL: ${LOG_LEVEL}',
+    '      GREETING: hello-${NAME}',
+  ].join('\n');
+  const found = DS.lint(DS.parseCompose(yaml)).findings.filter((f) => f.rule === 'secret-empty-when-unset');
+  assert.equal(found.length, 0);
+});
+
+test('env-secret: a literal default (${VAR:-hunter2}) is a committed secret, named without echoing it', () => {
+  const yaml = [
+    'services:',
+    '  db:',
+    '    image: postgres:16',
+    '    environment:',
+    '      POSTGRES_PASSWORD: ${DB_PASSWORD:-hunter2}',
+  ].join('\n');
+  const found = DS.lint(DS.parseCompose(yaml)).findings.filter((f) => f.rule === 'env-secret');
+  assert.equal(found.length, 1);
+  assert.equal(found[0].level, 'error');
+  assert.ok(/falls back to a literal default/.test(found[0].message));
+  assert.ok(!found[0].message.includes('hunter2'), 'the finding must never echo the secret');
+});
+
+test('build-arg-secret: the :? guard no longer false-positives, the literal default still fires', () => {
+  const yaml = [
+    'services:',
+    '  api:',
+    '    build:',
+    '      context: .',
+    '      args:',
+    '        NPM_TOKEN: ${NPM_TOKEN:?NPM_TOKEN is required}',
+    '  worker:',
+    '    build:',
+    '      context: .',
+    '      args:',
+    '        API_KEY: ${API_KEY:-sk-live-123}',
+  ].join('\n');
+  const found = DS.lint(DS.parseCompose(yaml)).findings.filter((f) => f.rule === 'build-arg-secret');
+  assert.equal(found.length, 1);
+  assert.equal(found[0].service, 'worker');
 });

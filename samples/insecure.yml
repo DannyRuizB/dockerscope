@@ -52,6 +52,7 @@ services:
                                      # unhealthy takes retries x that — and app's `condition: service_healthy` waits it out
     environment:
       POSTGRES_PASSWORD: hunter2     # env-secret (error)
+      REPLICATION_PASSWORD: ${REPL_PASSWORD}   # secret-empty-when-unset (warn) — unset var interpolates to "" and `up` continues
     ports:
       - "5432:5432"                  # port-public (warn) — on 0.0.0.0
     networks:
