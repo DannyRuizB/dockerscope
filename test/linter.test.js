@@ -686,6 +686,7 @@ test('the insecure sample trips every security rule at once', () => {
     'image-latest', 'docker-socket-mount', 'privileged', 'host-namespace',
     'dangerous-cap', 'sensitive-host-mount', 'dangerous-device', 'shared-namespace', 'no-new-privileges',
     'env-secret', 'secret-empty-when-unset', 'port-public', 'security-unconfined', 'build-arg-secret', 'command-secret',
+    'mem-reservation-exceeds-limit',
     'port-conflict', 'duplicate-container-name', 'depends-on-unknown',
     'depends-on-ignores-healthcheck', 'undeclared-network', 'undeclared-volume',
     'container-name-with-replicas', 'healthcheck-no-start-period',
@@ -2521,4 +2522,94 @@ test('build-arg-secret: the :? guard no longer false-positives, the literal defa
   const found = DS.lint(DS.parseCompose(yaml)).findings.filter((f) => f.rule === 'build-arg-secret');
   assert.equal(found.length, 1);
   assert.equal(found[0].service, 'worker');
+});
+
+test('mem-reservation-exceeds-limit: a soft floor above the hard ceiling is an error (legacy pair)', () => {
+  const yaml = [
+    'services:',
+    '  app:',
+    '    image: postgres:17',
+    '    mem_limit: 128m',
+    '    mem_reservation: 256m',
+  ].join('\n');
+  const findings = DS.lint(DS.parseCompose(yaml)).findings;
+  const hits = findings.filter((f) => f.rule === 'mem-reservation-exceeds-limit');
+  assert.equal(hits.length, 1);
+  assert.equal(hits[0].level, 'error');
+  assert.ok(/soft floor is above the hard ceiling/.test(hits[0].message));
+});
+
+test('mem-reservation-exceeds-limit: the deploy.resources form is judged too', () => {
+  const yaml = [
+    'services:',
+    '  a:',
+    '    image: nginx:1.27',
+    '    deploy:',
+    '      resources:',
+    '        limits: { memory: 128M }',
+    '        reservations: { memory: 200M }',
+  ].join('\n');
+  const hits = DS.lint(DS.parseCompose(yaml)).findings.filter((f) => f.rule === 'mem-reservation-exceeds-limit');
+  assert.equal(hits.length, 1);
+});
+
+test('mem-reservation-exceeds-limit: equal sizes are allowed (the daemon creates), different units compared right', () => {
+  const yaml = [
+    'services:',
+    '  equal:',
+    '    image: alpine:3.20',
+    '    mem_limit: 128m',
+    '    mem_reservation: 128m',
+    '  underGig:',       // 512m reservation under a 1g limit: fine
+    '    image: alpine:3.20',
+    '    mem_limit: 1g',
+    '    mem_reservation: 512m',
+  ].join('\n');
+  const hits = DS.lint(DS.parseCompose(yaml)).findings.filter((f) => f.rule === 'mem-reservation-exceeds-limit');
+  assert.equal(hits.length, 0);
+});
+
+test('mem-reservation-exceeds-limit: unit spellings (1gb > 512mb) still fire, and bytes compare', () => {
+  const yaml = [
+    'services:',
+    '  a:',
+    '    image: alpine:3.20',
+    '    mem_limit: 536870912',  // 512Mi in bytes
+    '    mem_reservation: 1gb',
+  ].join('\n');
+  const hits = DS.lint(DS.parseCompose(yaml)).findings.filter((f) => f.rule === 'mem-reservation-exceeds-limit');
+  assert.equal(hits.length, 1);
+});
+
+test('mem-reservation-exceeds-limit stays silent when either side is missing or an interpolation', () => {
+  const yaml = [
+    'services:',
+    '  noLimit:',
+    '    image: alpine:3.20',
+    '    mem_reservation: 256m',
+    '  interp:',
+    '    image: alpine:3.20',
+    '    mem_limit: ${MEM_MAX}',
+    '    mem_reservation: 256m',
+  ].join('\n');
+  const hits = DS.lint(DS.parseCompose(yaml)).findings.filter((f) => f.rule === 'mem-reservation-exceeds-limit');
+  assert.equal(hits.length, 0);
+});
+
+test('parser normalizes memoryReservation from either spelling, null when absent', () => {
+  const compose = [
+    'services:',
+    '  a:',
+    '    image: nginx:1.27',
+    '    deploy: { resources: { reservations: { memory: 256M } } }',
+    '  b:',
+    '    image: redis:7.4',
+    '    mem_reservation: 134217728',
+    '  c:',
+    '    image: postgres:17',
+  ].join('\n');
+  const by = Object.fromEntries(DS.parseCompose(compose).services.map((s) => [s.name, s.memoryReservation]));
+  assert.equal(by.a, '256M');
+  assert.equal(by.b, '134217728');
+  assert.equal(by.c, null);
 });

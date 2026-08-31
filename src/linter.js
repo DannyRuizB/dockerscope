@@ -262,6 +262,47 @@ function ruleNoMemoryLimit(svc) {
   }];
 }
 
+// Compose memory sizes: an optional decimal number and an optional unit
+// (b/k/m/g, case-insensitive, the trailing `b` optional — `512m`, `1.5G`,
+// `1gb`, a bare byte count). Returns a byte count, or null for a shape we
+// can't read (an interpolation, garbage). Mirrors the units the daemon's
+// own parser accepts; `k`/`m`/`g` are 1024-based, matching Docker.
+function parseMemoryBytes(value) {
+  if (value == null) return null;
+  const m = String(value).trim().match(/^(\d+(?:\.\d+)?)\s*([bkmg])?b?$/i);
+  if (!m) return null;
+  const n = parseFloat(m[1]);
+  if (!Number.isFinite(n)) return null;
+  const mult = { b: 1, k: 1024, m: 1024 ** 2, g: 1024 ** 3 };
+  return Math.round(n * (m[2] ? mult[m[2].toLowerCase()] : 1));
+}
+
+// `mem_reservation` is the SOFT floor (Docker keeps at least this much
+// available to the container under memory pressure); `mem_limit` is the HARD
+// ceiling. A floor above the ceiling is a contradiction, and the daemon says
+// so — but only at the expensive step: `docker compose config` accepts the
+// file without a word, then `up` dies at container create with "Minimum
+// memory limit can not be less than memory reservation limit" and the
+// container never exists (measured against a real daemon, both the legacy
+// `mem_limit`/`mem_reservation` pair and the `deploy.resources`
+// limits/reservations pair). EQUAL is fine (measured: 128m/128m creates), so
+// only a reservation strictly greater than the limit fires. The classic bite
+// is bumping the limit down during a tuning pass and forgetting the
+// reservation set higher in a calmer moment. Unreadable sizes (either side an
+// interpolation) are never judged.
+function ruleMemReservationExceedsLimit(svc) {
+  const limit = parseMemoryBytes(svc.memoryLimit);
+  const reservation = parseMemoryBytes(svc.memoryReservation);
+  if (limit == null || reservation == null) return [];
+  if (reservation <= limit) return [];
+  return [{
+    level: "error",
+    rule: "mem-reservation-exceeds-limit",
+    message: `memory reservation (\`${svc.memoryReservation}\`) is larger than the memory limit (\`${svc.memoryLimit}\`) — the soft floor is above the hard ceiling, so Compose accepts the file but the daemon refuses to create the container ("Minimum memory limit can not be less than memory reservation limit").`,
+    hint: "Lower the reservation below the limit (or raise the limit): the reservation is the guaranteed minimum, the limit the maximum, and the minimum cannot exceed the maximum. Equal is allowed.",
+  }];
+}
+
 // `oom_kill_disable: true` is a lie on every modern host and a host-killer
 // on the old ones. On cgroups v2 (every current distro) the daemon DISCARDS
 // it with a warning buried in the run output ("Your kernel does not support
@@ -1494,6 +1535,7 @@ const RULES = [
   ruleRestartNoWithHealthcheck,
   ruleNoHealthcheck,
   ruleNoMemoryLimit,
+  ruleMemReservationExceedsLimit,
   ruleOomKillDisable,
   ruleNoPidsLimit,
   ruleNoCpuLimit,
