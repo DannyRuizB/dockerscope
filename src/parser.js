@@ -110,6 +110,10 @@ window.DockerScope.parseCompose = function (yamlText, fileMap) {
       // to the legacy service-level `mem_limit`. Kept as the raw string
       // ("512M"); numeric byte values are stringified.
       memoryLimit: parseMemoryLimit(raw),
+      // Memory reservation (the soft floor): modern
+      // `deploy.resources.reservations.memory`, falling back to the legacy
+      // service-level `mem_reservation`. Same raw-string shape as the limit.
+      memoryReservation: parseMemoryReservation(raw),
       // PID cap: modern `deploy.resources.limits.pids` (integer), falling
       // back to the legacy service-level `pids_limit`.
       pidsLimit: parsePidsLimit(raw),
@@ -297,16 +301,32 @@ function parseCpuLimit(raw) {
   return null;
 }
 
-function parseMemoryLimit(raw) {
-  const deploy = raw.deploy && typeof raw.deploy === "object" ? raw.deploy : null;
-  const resources = deploy && deploy.resources && typeof deploy.resources === "object"
-    ? deploy.resources : null;
-  const limits = resources && resources.limits && typeof resources.limits === "object"
-    ? resources.limits : null;
-  const v = limits && limits.memory != null ? limits.memory : raw.mem_limit;
+function normalizeMemoryValue(v) {
   if (typeof v === "string" && v.trim() !== "") return v.trim();
   if (typeof v === "number" && Number.isFinite(v)) return String(v);
   return null;
+}
+
+function deployResources(raw) {
+  const deploy = raw.deploy && typeof raw.deploy === "object" ? raw.deploy : null;
+  return deploy && deploy.resources && typeof deploy.resources === "object"
+    ? deploy.resources : null;
+}
+
+function parseMemoryLimit(raw) {
+  const resources = deployResources(raw);
+  const limits = resources && resources.limits && typeof resources.limits === "object"
+    ? resources.limits : null;
+  const v = limits && limits.memory != null ? limits.memory : raw.mem_limit;
+  return normalizeMemoryValue(v);
+}
+
+function parseMemoryReservation(raw) {
+  const resources = deployResources(raw);
+  const reservations = resources && resources.reservations && typeof resources.reservations === "object"
+    ? resources.reservations : null;
+  const v = reservations && reservations.memory != null ? reservations.memory : raw.mem_reservation;
+  return normalizeMemoryValue(v);
 }
 
 function parseDependsOn(value) {

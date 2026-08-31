@@ -44,6 +44,8 @@ services:
   # Database published to the world with a hardcoded password.
   db:
     image: postgres:16
+    mem_limit: 256m                  # a hard ceiling…
+    mem_reservation: 512m            # mem-reservation-exceeds-limit (error) — soft floor above the ceiling; the daemon refuses to create it
     healthcheck:                     # defined… but see app's depends_on below
       test: ["CMD-SHELL", "pg_isready -U postgres"]
       interval: 10s                  # healthcheck-no-start-period (warn) — boot failures count against retries
