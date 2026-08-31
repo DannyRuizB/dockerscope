@@ -5,7 +5,7 @@
 // Each file in src/ hangs its public API off `window.DockerScope`. We load the
 // pure-logic modules into a single vm sandbox whose global doubles as `window`,
 // and provide the one CDN global the parser needs (`jsyaml`, the same js-yaml
-// 4.1.0 the page pulls from jsDelivr). The DOM/Cytoscape modules (app.js,
+// version the page pulls from jsDelivr — keep package.json and index.html in step). The DOM/Cytoscape modules (app.js,
 // graph.js) are skipped — they need a real DOM and carry no parsing logic.
 //
 // NB: values returned from the sandbox carry the sandbox's prototypes, so

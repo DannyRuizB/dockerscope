@@ -17,6 +17,29 @@ const SECRET_KEY_PATTERN = /(PASSWORD|PASSWD|SECRET|TOKEN|API[_-]?KEY|PRIVATE[_-
 // from outside the file" — not flagged as a literal secret).
 const INTERPOLATION_PATTERN = /^\$\{?[A-Za-z_][A-Za-z0-9_]*\}?$/;
 
+// The compose spec's modifier forms: ${VAR:-default} / ${VAR-default} fall back
+// when the variable is unset, ${VAR:?err} / ${VAR?err} abort `up` when it is,
+// ${VAR:+alt} / ${VAR+alt} substitute only when it is set. Longest ops first so
+// `:-` wins over `-`.
+const INTERPOLATION_MODIFIER_PATTERN = /^\$\{([A-Za-z_][A-Za-z0-9_]*)(:-|:\?|:\+|-|\?|\+)([\s\S]*)\}$/;
+
+// Classifies a value that is EXACTLY one interpolation: {name, op, arg} (op ""
+// for the bare ${VAR}/$VAR forms), or null for anything else — literals and
+// compounds like "prefix-${VAR}" stay whatever they already were. For the
+// guard ops (:? / ?) `arg` is the error message, not a fallback value.
+function parseInterpolation(value) {
+  if (typeof value !== "string") return null;
+  if (INTERPOLATION_PATTERN.test(value)) {
+    return { name: value.replace(/^\$\{?|\}$/g, ""), op: "", arg: "" };
+  }
+  const m = value.match(INTERPOLATION_MODIFIER_PATTERN);
+  return m ? { name: m[1], op: m[2], arg: m[3] } : null;
+}
+
+function isGuardOp(op) {
+  return op === ":?" || op === "?";
+}
+
 function ruleImageLatest(svc) {
   if (!svc.image || svc.image === "(build)") return [];
   const m = svc.image.match(/^(.+?):([^:]+)$/);
@@ -40,17 +63,44 @@ function ruleImageLatest(svc) {
   return [];
 }
 
+// Four outcomes for a secret-looking key, by how the value gets there:
+//   literal value          → error (env-secret): the secret is in the file
+//   ${VAR:-hunter2}        → error (env-secret): the fallback is in the file
+//   ${VAR} / ${VAR:-}      → warn (secret-empty-when-unset): an unset variable
+//                            interpolates to "" and `up` continues after a
+//                            one-line warning — the stack runs with an empty
+//                            secret and nothing errors
+//   ${VAR:?msg}            → silence: unset aborts `up`, the file holds nothing
 function ruleEnvSecrets(svc) {
   const findings = [];
   for (const { key, value } of svc.environment) {
     if (!SECRET_KEY_PATTERN.test(key)) continue;
     if (value == null) continue; // pass-through (`KEY` without `=`) — the value lives in the host env, not the file.
-    if (INTERPOLATION_PATTERN.test(value)) continue; // ${SECRET_FROM_HOST} — value is interpolated, not literal.
+    const interp = parseInterpolation(value);
+    if (interp) {
+      if (isGuardOp(interp.op)) continue; // ${VAR:?msg} — unset aborts `up`, and the file holds no value
+      if (interp.arg) {
+        findings.push({
+          level: "error",
+          rule: "env-secret",
+          message: `\`${key}\` falls back to a literal default in \`environment\` — the \`\${${interp.name}${interp.op}…}\` fallback is a secret committed in the file.`,
+          hint: "Drop the default and make the variable required (`${VAR:?VAR is not set}`), or move the secret to Docker secrets.",
+        });
+        continue;
+      }
+      findings.push({
+        level: "warn",
+        rule: "secret-empty-when-unset",
+        message: `\`${key}\` comes from \`${value}\` with no \`:?\` guard — if the variable is unset at deploy time, Compose interpolates an empty string and \`up\` continues after a one-line warning.`,
+        hint: 'An empty secret either fails the boot (Postgres) or comes up unprotected (`--requirepass ""` is no auth at all). Make it required: `${VAR:?VAR is not set}`.',
+      });
+      continue;
+    }
     findings.push({
       level: "error",
       rule: "env-secret",
       message: `\`${key}\` is set to a literal value in \`environment\`.`,
-      hint: "Move secrets to a `.env` file referenced via `${VAR}` or to Docker secrets — never commit them.",
+      hint: "Move secrets to a `.env` file referenced via `${VAR:?VAR is not set}` or to Docker secrets — never commit them.",
     });
   }
   return findings;
@@ -850,7 +900,11 @@ function ruleBuildArgSecret(svc) {
   for (const { key, value } of svc.buildArgs) {
     if (!SECRET_KEY_PATTERN.test(key)) continue;
     if (value == null) continue; // pass-through — value lives in the host env
-    if (INTERPOLATION_PATTERN.test(value)) continue; // ${VAR} — still hits the image history at build time, but the file itself leaks nothing
+    const interp = parseInterpolation(value);
+    // ${VAR} / ${VAR:?msg} — still hits the image history at build time, but the
+    // file itself leaks nothing. A non-guard modifier with an argument
+    // (${VAR:-hunter2}) is a literal fallback committed in the file — flagged.
+    if (interp && (isGuardOp(interp.op) || !interp.arg)) continue;
     findings.push({
       level: "error",
       rule: "build-arg-secret",
