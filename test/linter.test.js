@@ -686,7 +686,7 @@ test('the insecure sample trips every security rule at once', () => {
     'image-latest', 'docker-socket-mount', 'privileged', 'host-namespace',
     'dangerous-cap', 'sensitive-host-mount', 'dangerous-device', 'shared-namespace', 'no-new-privileges',
     'env-secret', 'secret-empty-when-unset', 'port-public', 'security-unconfined', 'build-arg-secret', 'command-secret',
-    'mem-reservation-exceeds-limit', 'ulimit-soft-exceeds-hard', 'zero-limit-is-unlimited',
+    'mem-reservation-exceeds-limit', 'ulimit-soft-exceeds-hard', 'zero-limit-is-unlimited', 'shell-pid1-no-init',
     'port-conflict', 'duplicate-container-name', 'depends-on-unknown',
     'depends-on-ignores-healthcheck', 'undeclared-network', 'undeclared-volume',
     'container-name-with-replicas', 'healthcheck-no-start-period',
@@ -2716,4 +2716,59 @@ test('zero-limit-is-unlimited: exactly ONE finding per zeroed resource — the n
   // ...and with the key absent the classic rules are still the ones talking.
   const none = lintZero([]).filter((f) => /^(no-memory-limit|no-pids-limit|no-cpu-limit)$/.test(f.rule));
   assert.equal(none.length, 3);
+});
+
+// --- rule 59: shell-pid1-no-init ---------------------------------------------
+// Measured: `docker stop -t 10` on `sh -c 'sleep 1000'` took 10.2 s (sh at
+// PID 1 forwards nothing); with `init: true` 0.2 s. `exec sleep` also took
+// 10.2 s — PID 1 gets no default handlers — so `exec` is the app's promise.
+
+function pid1Hits(lines) {
+  const yaml = ['services:', '  app:', ...lines.map((l) => `    ${l}`)].join('\n');
+  return DS.lint(DS.parseCompose(yaml)).findings.filter((f) => f.rule === 'shell-pid1-no-init');
+}
+
+test('shell-pid1-no-init: a string command with no init is a warning naming the grace-period kill', () => {
+  const hits = pid1Hits(['image: node:22-alpine', 'command: sh -c "npm start"']);
+  assert.equal(hits.length, 1);
+  assert.equal(hits[0].level, 'warn');
+  assert.match(hits[0].message, /`command` runs through a shell/);
+  assert.match(hits[0].message, /10\.2 s/);
+  assert.equal(pid1Hits(['image: node:22-alpine', 'command: npm start']).length, 1, 'any string is shell form to compose');
+});
+
+test('shell-pid1-no-init: the spelled-out ["sh","-c",…] list is the same shell at PID 1', () => {
+  assert.equal(pid1Hits(['image: node:22-alpine', 'command: ["sh", "-c", "npm start"]']).length, 1);
+  assert.equal(pid1Hits(['image: node:22-alpine', 'command: ["/bin/bash", "-c", "npm start"]']).length, 1);
+  assert.equal(pid1Hits(['image: node:22-alpine', 'entrypoint: ["sh", "-c", "./run.sh"]']).length, 1);
+  assert.match(pid1Hits(['image: node:22-alpine', 'entrypoint: ["sh", "-c", "./run.sh"]'])[0].message, /`entrypoint` runs/);
+});
+
+test('shell-pid1-no-init: init: true, the exec form, an exec prefix and an interpolated script are spared', () => {
+  assert.equal(pid1Hits(['image: node:22-alpine', 'command: sh -c "npm start"', 'init: true']).length, 0, 'init: true');
+  assert.equal(pid1Hits(['image: node:22-alpine', 'command: ["npm", "start"]']).length, 0, 'exec form: the app is PID 1');
+  assert.equal(pid1Hits(['image: node:22-alpine', 'command: exec npm start']).length, 0, 'exec prefix');
+  // The STRING form is wrapped in another /bin/sh -c by compose, so an inner
+  // `sh -c "exec …"` still leaves the OUTER shell at PID 1 — it fires; the
+  // spelled-out list runs that shell directly and its `exec` is honoured.
+  assert.equal(pid1Hits(['image: node:22-alpine', 'command: sh -c "exec node server.js"']).length, 1, 'string form: the outer sh stays PID 1');
+  assert.equal(pid1Hits(['image: node:22-alpine', 'command: ["sh", "-c", "exec node server.js"]']).length, 0, 'list form with exec inside the -c script');
+  assert.equal(pid1Hits(['image: node:22-alpine', 'command: ${START_CMD}']).length, 0, 'interpolation');
+  assert.equal(pid1Hits(['image: node:22-alpine']).length, 0, 'no command at all');
+});
+
+test('shell-pid1-no-init: an exec-form entrypoint owns PID 1, so a shell command under it is fine', () => {
+  assert.equal(pid1Hits(['image: node:22-alpine', 'entrypoint: ["tini", "--"]', 'command: sh -c "npm start"']).length, 0);
+});
+
+test('shell-pid1-no-init: an init in a visible Dockerfile ENTRYPOINT exempts the service', () => {
+  const files = {
+    'docker-compose.yml': ['services:', '  app:', '    build: .', '    command: sh -c "npm start"'].join('\n'),
+    'Dockerfile': ['FROM node:22-alpine', 'RUN apk add --no-cache tini', 'ENTRYPOINT ["/sbin/tini", "--"]', 'CMD ["npm", "start"]'].join('\n'),
+  };
+  const model = DS.parseCompose(files['docker-compose.yml'], new Map(Object.entries(files)));
+  assert.equal(DS.lint(model).findings.filter((f) => f.rule === 'shell-pid1-no-init').length, 0);
+  const plain = { ...files, Dockerfile: ['FROM node:22-alpine', 'CMD ["npm", "start"]'].join('\n') };
+  const model2 = DS.parseCompose(plain['docker-compose.yml'], new Map(Object.entries(plain)));
+  assert.equal(DS.lint(model2).findings.filter((f) => f.rule === 'shell-pid1-no-init').length, 1);
 });

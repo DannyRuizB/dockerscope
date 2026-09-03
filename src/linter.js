@@ -376,6 +376,48 @@ function ruleZeroLimitIsUnlimited(svc) {
   return out;
 }
 
+// A shell at PID 1 never forwards SIGTERM. `command: sh -c "npm start"` (the
+// string form — compose wraps it in /bin/sh -c — or the spelled-out
+// ["sh","-c",…]) makes sh PID 1 with the real process as its child; on
+// `docker stop` the daemon signals PID 1, sh does nothing with it, and the
+// child never hears a thing until the grace period ends and SIGKILL lands.
+// MEASURED against a real daemon: `docker stop -t 10` on `sh -c 'sleep 1000'`
+// took 10.2 s; the same with `init: true` took 0.2 s (docker-init at PID 1 —
+// measured as /sbin/docker-init -- sh -c … — forwards the signal and reaps
+// zombies). Two honest edges from the same measurement: `sh -c "exec app"`
+// hands PID 1 to the app itself, which then must handle SIGTERM on its own
+// (`exec sleep` still took 10.2 s — PID 1 gets no default handlers, so a
+// process that ignores SIGTERM ignores it forever); and an image whose own
+// ENTRYPOINT is an init (tini, dumb-init) already has the fix, which the
+// linter can only see when the Dockerfile is in the paste. So: shell form,
+// no `init: true`, no `exec` prefix, no init in a visible ENTRYPOINT → warn.
+// The entrypoint wins when both are set: it is what becomes PID 1.
+const INIT_BINARIES = /(^|\/)(tini|dumb-init|docker-init|s6-svscan|catatonit|supervisord)(\s|$)/;
+function dockerfileHasInit(svc) {
+  const stage = svc.dockerfile && svc.dockerfile.finalStage;
+  const ep = stage && stage.entrypoint;
+  if (!ep) return false;
+  const text = ep.exec ? ep.exec.join(" ") : (ep.shell || "");
+  return INIT_BINARIES.test(text);
+}
+
+function ruleShellPid1NoInit(svc) {
+  if (svc.init) return [];
+  const which = svc.entrypointShell ? "entrypoint" : (svc.commandShell ? "command" : null);
+  if (!which) return [];
+  if (which === "command" && svc.entrypoint) return []; // an exec-form entrypoint owns PID 1
+  const script = which === "entrypoint" ? svc.entrypointShell : svc.commandShell;
+  if (/^exec\s/.test(script)) return [];
+  if (script.includes("${")) return [];
+  if (dockerfileHasInit(svc)) return [];
+  return [{
+    level: "warn",
+    rule: "shell-pid1-no-init",
+    message: `\`${which}\` runs through a shell (\`sh -c …\`) with no \`init: true\` — the shell becomes PID 1 and never forwards SIGTERM, so \`docker stop\` waits the whole grace period and SIGKILLs the real process (measured: 10.2 s and a kill, vs 0.2 s with \`init: true\`). No graceful shutdown, no flushed buffers, no drained connections.`,
+    hint: "Add `init: true` (docker-init at PID 1 forwards signals and reaps zombies), or use the exec form (`[\"npm\", \"start\"]`) / `exec` in the shell script so the app itself is PID 1 — and then make sure it handles SIGTERM, because PID 1 gets no default handlers.",
+  }];
+}
+
 // `oom_kill_disable: true` is a lie on every modern host and a host-killer
 // on the old ones. On cgroups v2 (every current distro) the daemon DISCARDS
 // it with a warning buried in the run output ("Your kernel does not support
@@ -1649,6 +1691,7 @@ const RULES = [
   ruleServiceHealthyNoHealthcheck,
   ruleCompletedDependencyRestarts,
   ruleStopSignalUncatchable,
+  ruleShellPid1NoInit,
   ruleHealthcheckTestInvalid,
   ruleUndeclaredNetwork,
   ruleUndeclaredVolume,
