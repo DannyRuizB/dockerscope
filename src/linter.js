@@ -338,6 +338,44 @@ function ruleUlimitSoftExceedsHard(svc) {
   return out;
 }
 
+// A zero is not a cap, it is the ABSENCE of one — and it reads like a cap.
+// Measured against a real daemon (29.x, compose v5): `pids_limit: 0`,
+// `mem_limit: 0` (or `0m`), `cpus: 0`, `cpu_quota: 0` and the `deploy`
+// spellings (`limits.pids: 0`, `limits.memory: "0"`, `limits.cpus: "0"`) all
+// pass `docker compose config` — which DROPS them from its output, i.e.
+// normalizes them to "unset" — and the container starts with the cgroup wide
+// open: pids.max at the parent's value (HostConfig.PidsLimit is nil),
+// memory.max and cpu.max at `max`. `docker run --pids-limit 0` / `-m 0` /
+// `--cpus 0` say the same. The classic bites: a template with `mem_limit: 0`
+// left as "fill me in", or "0 = disabled" read as "0 = nothing may run".
+// Until this rule the no-*-limit trio counted a zero as a cap (a value was
+// present), so the file passed with a hole; those rules keep standing down
+// for a zero and THIS one names it — one finding per resource, the precise one.
+function isZeroLimit(v) {
+  if (v == null) return false;
+  if (String(v).includes("${")) return false;
+  return parseMemoryBytes(v) === 0;
+}
+
+function ruleZeroLimitIsUnlimited(svc) {
+  const out = [];
+  const checks = [
+    ["memory", svc.memoryLimit, "`mem_limit` / `deploy.resources.limits.memory`", "`512M`"],
+    ["PID", svc.pidsLimit, "`pids_limit` / `deploy.resources.limits.pids`", "`256`"],
+    ["CPU", svc.cpuLimit, "`cpus` / `cpu_quota` / `deploy.resources.limits.cpus`", '`"0.50"`'],
+  ];
+  for (const [what, value, keys, example] of checks) {
+    if (!isZeroLimit(value)) continue;
+    out.push({
+      level: "warn",
+      rule: "zero-limit-is-unlimited",
+      message: `${keys} is \`${value}\` — a zero here is not a cap, it is the absence of one: the daemon starts the container with no ${what} limit at all (measured: the cgroup reads \`max\`, and \`compose config\` silently drops the key), while the file reads as if the service were capped.`,
+      hint: `Set a real ${what} cap (e.g. ${example}) or delete the key, so the file says what the daemon does.`,
+    });
+  }
+  return out;
+}
+
 // `oom_kill_disable: true` is a lie on every modern host and a host-killer
 // on the old ones. On cgroups v2 (every current distro) the daemon DISCARDS
 // it with a warning buried in the run output ("Your kernel does not support
@@ -1572,6 +1610,7 @@ const RULES = [
   ruleNoMemoryLimit,
   ruleMemReservationExceedsLimit,
   ruleUlimitSoftExceedsHard,
+  ruleZeroLimitIsUnlimited,
   ruleOomKillDisable,
   ruleNoPidsLimit,
   ruleNoCpuLimit,

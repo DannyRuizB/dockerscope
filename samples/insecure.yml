@@ -50,6 +50,7 @@ services:
       nofile:
         soft: 65536                  # ulimit-soft-exceeds-hard (error) — soft above hard: `config` is silent, `up` dies inside the runtime
         hard: 1024
+    pids_limit: 0                    # zero-limit-is-unlimited (warn) — reads like a cap, is the absence of one (cgroup pids.max stays open)
     healthcheck:                     # defined… but see app's depends_on below
       test: ["CMD-SHELL", "pg_isready -U postgres"]
       interval: 10s                  # healthcheck-no-start-period (warn) — boot failures count against retries
