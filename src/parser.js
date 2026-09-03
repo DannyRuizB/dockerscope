@@ -176,6 +176,15 @@ window.DockerScope.parseCompose = function (yamlText, fileMap) {
       // both to one space-joined string — the linter only scans, never runs.
       command: normalizeCommand(raw.command),
       entrypoint: normalizeCommand(raw.entrypoint),
+      // Whether each one puts a SHELL at PID 1: the string form (compose
+      // wraps it in `/bin/sh -c`) or an exec-form list that spells the shell
+      // out (`["sh", "-c", "…"]`). What the linter needs to judge signal
+      // handling; the joined strings above stay for the secret scans.
+      commandShell: isShellForm(raw.command),
+      entrypointShell: isShellForm(raw.entrypoint),
+      // `init: true` puts docker-init at PID 1 (measured: /sbin/docker-init
+      // -- sh -c …), which forwards signals and reaps zombies.
+      init: raw.init === true,
       // build.args accepts the same two shapes as environment (list of
       // "KEY=value" strings, or a mapping) — reuse the same normalizer.
       buildArgs: parseEnvironment(
@@ -364,6 +373,20 @@ function parseDependsOn(value) {
   if (Array.isArray(value)) return value.map(String);
   if (typeof value === "object") return Object.keys(value);
   return [];
+}
+
+// A shell at PID 1: the string form (compose runs it through `/bin/sh -c`),
+// or an exec-form list whose argv is a shell invoked with -c. Returns the
+// script the shell will run (trimmed) so the linter can spot an `exec`
+// prefix, or null when there is no shell form at all.
+const SHELL_BINARIES = new Set(["sh", "bash", "dash", "ash", "zsh"]);
+function isShellForm(value) {
+  if (typeof value === "string") return value.trim() || null;
+  if (Array.isArray(value) && value.length >= 3) {
+    const bin = String(value[0]).split("/").pop();
+    if (SHELL_BINARIES.has(bin) && String(value[1]) === "-c") return String(value[2]).trim() || null;
+  }
+  return null;
 }
 
 // command / entrypoint: string form stays as-is, exec-form list joins with

@@ -41,6 +41,26 @@ services:
     devices:
       - /dev/sda:/dev/sda:r          # dangerous-device (error) — the raw disk IS the host fs, and :r doesn't soften it
 
+  # A shell at PID 1: `docker stop` waits the grace period and kills.
+  worker:
+    image: node:22-alpine
+    command: sh -c "npm run worker"   # shell-pid1-no-init (warn) — sh never forwards SIGTERM; add init: true or exec form
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 256m
+    pids_limit: 128
+    cpus: "0.50"
+    healthcheck:
+      test: ["CMD", "node", "-e", "process.exit(0)"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+
   # Database published to the world with a hardcoded password.
   db:
     image: postgres:16
