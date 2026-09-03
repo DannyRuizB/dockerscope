@@ -686,7 +686,7 @@ test('the insecure sample trips every security rule at once', () => {
     'image-latest', 'docker-socket-mount', 'privileged', 'host-namespace',
     'dangerous-cap', 'sensitive-host-mount', 'dangerous-device', 'shared-namespace', 'no-new-privileges',
     'env-secret', 'secret-empty-when-unset', 'port-public', 'security-unconfined', 'build-arg-secret', 'command-secret',
-    'mem-reservation-exceeds-limit', 'ulimit-soft-exceeds-hard',
+    'mem-reservation-exceeds-limit', 'ulimit-soft-exceeds-hard', 'zero-limit-is-unlimited',
     'port-conflict', 'duplicate-container-name', 'depends-on-unknown',
     'depends-on-ignores-healthcheck', 'undeclared-network', 'undeclared-volume',
     'container-name-with-replicas', 'healthcheck-no-start-period',
@@ -2664,4 +2664,56 @@ test('ulimit-soft-exceeds-hard: interpolated or unreadable values are never judg
   assert.equal(lintUlimits(['nofile:', '  soft: 65536', '  hard: ${NOFILE_HARD}']).length, 0, 'interpolation on the hard side');
   assert.equal(lintUlimits(['nofile:', '  soft: many', '  hard: 1024']).length, 0, 'garbage');
   assert.equal(lintUlimits(['nofile: ${NOFILE}']).length, 0, 'interpolated single form');
+});
+
+// --- rule 58: zero-limit-is-unlimited --------------------------------------
+// Measured against a real daemon (29.x, compose v5): every zero-valued limit
+// passes `compose config` (which drops the key) and the container runs with
+// the cgroup at `max` — pids.max at the parent's value, HostConfig.PidsLimit
+// nil. The no-*-limit rules treated the zero as a cap; this one names it.
+
+function lintZero(lines) {
+  const yaml = ['services:', '  app:', '    image: nginx:1.27', ...lines.map((l) => `    ${l}`)].join('\n');
+  return DS.lint(DS.parseCompose(yaml)).findings.filter((f) => f.service === 'app');
+}
+function zeroHits(lines) {
+  return lintZero(lines).filter((f) => f.rule === 'zero-limit-is-unlimited');
+}
+
+test('zero-limit-is-unlimited: the legacy zeros fire once per resource, as warnings naming the absence', () => {
+  const hits = zeroHits(['mem_limit: 0', 'pids_limit: 0', 'cpus: 0']);
+  assert.equal(hits.length, 3);
+  for (const h of hits) {
+    assert.equal(h.level, 'warn');
+    assert.match(h.message, /absence of one/);
+    assert.match(h.message, /`max`/);
+  }
+  assert.ok(hits.some((h) => /mem_limit/.test(h.message)), 'memory');
+  assert.ok(hits.some((h) => /pids_limit/.test(h.message)), 'pids');
+  assert.ok(hits.some((h) => /`cpus`/.test(h.message)), 'cpu');
+});
+
+test('zero-limit-is-unlimited: deploy spellings, 0m and cpu_quota are zeros too', () => {
+  const hits = zeroHits(['deploy:', '  resources:', '    limits:', '      pids: 0', '      memory: "0"', '      cpus: "0"']);
+  assert.equal(hits.length, 3);
+  assert.equal(zeroHits(['mem_limit: 0m']).length, 1, '0m is zero bytes');
+  assert.equal(zeroHits(['mem_limit: "0g"']).length, 1, '0g is zero bytes');
+  assert.equal(zeroHits(['cpu_quota: 0']).length, 1, 'cpu_quota 0');
+});
+
+test('zero-limit-is-unlimited: real caps, no caps and interpolations are never judged', () => {
+  assert.equal(zeroHits(['mem_limit: 512m', 'pids_limit: 256', 'cpus: "0.50"']).length, 0, 'real caps');
+  assert.equal(zeroHits(['cpus: 0.5']).length, 0, 'a fractional CPU is a cap');
+  assert.equal(zeroHits([]).length, 0, 'no keys at all is the no-*-limit rules\' business');
+  assert.equal(zeroHits(['mem_limit: ${MEM}', 'pids_limit: ${PIDS}']).length, 0, 'interpolations');
+});
+
+test('zero-limit-is-unlimited: exactly ONE finding per zeroed resource — the no-*-limit rules stand down', () => {
+  const all = lintZero(['mem_limit: 0', 'pids_limit: 0', 'cpus: 0']);
+  const limitRules = all.filter((f) => /^(no-memory-limit|no-pids-limit|no-cpu-limit|zero-limit-is-unlimited)$/.test(f.rule));
+  assert.equal(limitRules.length, 3);
+  assert.ok(limitRules.every((f) => f.rule === 'zero-limit-is-unlimited'));
+  // ...and with the key absent the classic rules are still the ones talking.
+  const none = lintZero([]).filter((f) => /^(no-memory-limit|no-pids-limit|no-cpu-limit)$/.test(f.rule));
+  assert.equal(none.length, 3);
 });
