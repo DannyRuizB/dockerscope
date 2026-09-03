@@ -686,7 +686,7 @@ test('the insecure sample trips every security rule at once', () => {
     'image-latest', 'docker-socket-mount', 'privileged', 'host-namespace',
     'dangerous-cap', 'sensitive-host-mount', 'dangerous-device', 'shared-namespace', 'no-new-privileges',
     'env-secret', 'secret-empty-when-unset', 'port-public', 'security-unconfined', 'build-arg-secret', 'command-secret',
-    'mem-reservation-exceeds-limit',
+    'mem-reservation-exceeds-limit', 'ulimit-soft-exceeds-hard',
     'port-conflict', 'duplicate-container-name', 'depends-on-unknown',
     'depends-on-ignores-healthcheck', 'undeclared-network', 'undeclared-volume',
     'container-name-with-replicas', 'healthcheck-no-start-period',
@@ -2612,4 +2612,56 @@ test('parser normalizes memoryReservation from either spelling, null when absent
   assert.equal(by.a, '256M');
   assert.equal(by.b, '134217728');
   assert.equal(by.c, null);
+});
+
+// --- rule 57: ulimit-soft-exceeds-hard -------------------------------------
+// Measured against a real daemon (29.x): `docker run --ulimit nofile=65536:1024`
+// is refused on the spot ("ulimit soft limit must be less than or equal to
+// hard limit"); the same pair in a compose file passes `docker compose config`
+// silently and `up` dies at container create inside the runtime ("error
+// setting rlimits for ready process: ... invalid argument"). Equal runs;
+// -1 is unlimited and counts as larger than any finite value.
+
+function lintUlimits(block) {
+  const yaml = ['services:', '  app:', '    image: nginx:1.27', '    ulimits:', ...block.map((l) => `      ${l}`)].join('\n');
+  return DS.lint(DS.parseCompose(yaml)).findings.filter((f) => f.rule === 'ulimit-soft-exceeds-hard');
+}
+
+test('ulimit-soft-exceeds-hard: a soft limit above the hard one is an error naming the resource', () => {
+  const hits = lintUlimits(['nofile:', '  soft: 65536', '  hard: 1024']);
+  assert.equal(hits.length, 1);
+  assert.equal(hits[0].level, 'error');
+  assert.equal(hits[0].service, 'app');
+  assert.match(hits[0].message, /ulimits\.nofile/);
+  assert.match(hits[0].message, /65536/);
+  assert.match(hits[0].message, /1024/);
+  assert.match(hits[0].message, /refuses to start/);
+});
+
+test('ulimit-soft-exceeds-hard: equal, soft below hard and the single-number form are all fine', () => {
+  assert.equal(lintUlimits(['nofile:', '  soft: 1024', '  hard: 1024']).length, 0, 'equal is allowed (measured: 1024:1024 runs)');
+  assert.equal(lintUlimits(['nofile:', '  soft: 1024', '  hard: 65536']).length, 0, 'soft below hard');
+  assert.equal(lintUlimits(['nofile: 20000', 'nproc: 4096']).length, 0, 'single number sets both — they cannot disagree');
+});
+
+test('ulimit-soft-exceeds-hard: -1 is unlimited — above any finite hard limit, but a hard -1 accepts anything', () => {
+  const hits = lintUlimits(['nofile:', '  soft: -1', '  hard: 1024']);
+  assert.equal(hits.length, 1, 'soft unlimited over a finite hard limit (measured: refused as "soft: -1 (unlimited), hard: 1024")');
+  assert.match(hits[0].message, /-1 \(unlimited\)/);
+  assert.equal(lintUlimits(['core:', '  soft: 0', '  hard: -1']).length, 0, 'finite soft under an unlimited hard');
+  assert.equal(lintUlimits(['core:', '  soft: -1', '  hard: -1']).length, 0, 'both unlimited');
+});
+
+test('ulimit-soft-exceeds-hard: every offending resource gets its own finding; quoted integers are read', () => {
+  const hits = lintUlimits(['nofile:', '  soft: 65536', '  hard: 1024', 'nproc:', '  soft: "8192"', '  hard: "4096"', 'core:', '  soft: 0', '  hard: 0']);
+  assert.equal(hits.length, 2);
+  // Findings come from the vm realm — compare by value, not by prototype.
+  assert.deepEqual(JSON.parse(JSON.stringify(hits.map((h) => h.message.match(/ulimits\.(\w+)/)[1]).sort())), ['nofile', 'nproc']);
+});
+
+test('ulimit-soft-exceeds-hard: interpolated or unreadable values are never judged', () => {
+  assert.equal(lintUlimits(['nofile:', '  soft: ${NOFILE_SOFT}', '  hard: 1024']).length, 0, 'interpolation on the soft side');
+  assert.equal(lintUlimits(['nofile:', '  soft: 65536', '  hard: ${NOFILE_HARD}']).length, 0, 'interpolation on the hard side');
+  assert.equal(lintUlimits(['nofile:', '  soft: many', '  hard: 1024']).length, 0, 'garbage');
+  assert.equal(lintUlimits(['nofile: ${NOFILE}']).length, 0, 'interpolated single form');
 });

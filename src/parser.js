@@ -114,6 +114,12 @@ window.DockerScope.parseCompose = function (yamlText, fileMap) {
       // `deploy.resources.reservations.memory`, falling back to the legacy
       // service-level `mem_reservation`. Same raw-string shape as the limit.
       memoryReservation: parseMemoryReservation(raw),
+      // `ulimits:` — per resource (nofile, nproc, core…) either a single
+      // integer (sets soft AND hard) or a `{soft, hard}` mapping. Normalized
+      // to [{name, soft, hard}] with plain numbers; -1 means unlimited and is
+      // kept as-is (the linter treats it as larger than any finite value).
+      // Interpolated or unreadable values become null and are never judged.
+      ulimits: parseUlimits(raw.ulimits),
       // PID cap: modern `deploy.resources.limits.pids` (integer), falling
       // back to the legacy service-level `pids_limit`.
       pidsLimit: parsePidsLimit(raw),
@@ -327,6 +333,30 @@ function parseMemoryReservation(raw) {
     ? resources.reservations : null;
   const v = reservations && reservations.memory != null ? reservations.memory : raw.mem_reservation;
   return normalizeMemoryValue(v);
+}
+
+// One ulimit value: a plain integer (or a string holding one, `"1024"`),
+// or -1 for unlimited. Anything else — an interpolation, garbage — is null.
+function ulimitNumber(v) {
+  if (typeof v === "number") return Number.isInteger(v) ? v : null;
+  if (typeof v === "string" && /^-?\d+$/.test(v.trim())) return parseInt(v.trim(), 10);
+  return null;
+}
+
+function parseUlimits(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return [];
+  const out = [];
+  for (const [name, raw] of Object.entries(value)) {
+    if (raw && typeof raw === "object" && !Array.isArray(raw)) {
+      out.push({ name, soft: ulimitNumber(raw.soft), hard: ulimitNumber(raw.hard) });
+    } else {
+      // Single-number form: the daemon applies it to both limits, so they
+      // can never disagree — recorded as such.
+      const n = ulimitNumber(raw);
+      out.push({ name, soft: n, hard: n });
+    }
+  }
+  return out;
 }
 
 function parseDependsOn(value) {

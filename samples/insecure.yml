@@ -46,6 +46,10 @@ services:
     image: postgres:16
     mem_limit: 256m                  # a hard ceiling…
     mem_reservation: 512m            # mem-reservation-exceeds-limit (error) — soft floor above the ceiling; the daemon refuses to create it
+    ulimits:
+      nofile:
+        soft: 65536                  # ulimit-soft-exceeds-hard (error) — soft above hard: `config` is silent, `up` dies inside the runtime
+        hard: 1024
     healthcheck:                     # defined… but see app's depends_on below
       test: ["CMD-SHELL", "pg_isready -U postgres"]
       interval: 10s                  # healthcheck-no-start-period (warn) — boot failures count against retries
