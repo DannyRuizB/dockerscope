@@ -303,6 +303,41 @@ function ruleMemReservationExceedsLimit(svc) {
   }];
 }
 
+// A ulimit is a PAIR: the soft limit is what the process runs under and may
+// raise by itself, the hard limit is the ceiling it may raise it to. A soft
+// value above the hard one is therefore impossible by definition, and every
+// layer says so except the one people read: `docker run --ulimit
+// nofile=65536:1024` is refused on the spot ("ulimit soft limit must be less
+// than or equal to hard limit"), but `docker compose config` accepts the
+// same pair without a word and `up` dies inside the runtime at container
+// create ("error setting rlimits for ready process: ... invalid argument")
+// — the container never exists (measured against a real daemon, 29.x).
+// -1 means unlimited, which sits above any finite hard limit (measured:
+// `-1:1024` is refused as "soft: -1 (unlimited), hard: 1024"); a hard -1
+// accepts any soft value. EQUAL is fine (1024:1024 runs), and the
+// single-number form sets both, so neither can ever fire. The usual bite:
+// raising the soft limit for a busy service and forgetting the hard one it
+// was written under. Unreadable values (interpolations) are never judged.
+function ulimitRank(n) {
+  return n < 0 ? Infinity : n;
+}
+
+function ruleUlimitSoftExceedsHard(svc) {
+  const out = [];
+  for (const u of svc.ulimits || []) {
+    if (u.soft == null || u.hard == null) continue;
+    if (ulimitRank(u.soft) <= ulimitRank(u.hard)) continue;
+    const softLabel = u.soft < 0 ? `${u.soft} (unlimited)` : String(u.soft);
+    out.push({
+      level: "error",
+      rule: "ulimit-soft-exceeds-hard",
+      message: `\`ulimits.${u.name}\` soft limit (${softLabel}) is above its hard limit (${u.hard}) — a process can never hold a soft limit past the hard one, so Compose accepts the file but the runtime refuses to start the container ("error setting rlimits ... invalid argument"); \`docker run --ulimit\` would have said it outright: "soft limit must be less than or equal to hard limit".`,
+      hint: `Lower the soft limit to at most the hard one (equal is allowed), raise the hard limit, or use the single-number form (\`${u.name}: N\`), which sets both at once.`,
+    });
+  }
+  return out;
+}
+
 // `oom_kill_disable: true` is a lie on every modern host and a host-killer
 // on the old ones. On cgroups v2 (every current distro) the daemon DISCARDS
 // it with a warning buried in the run output ("Your kernel does not support
@@ -1536,6 +1571,7 @@ const RULES = [
   ruleNoHealthcheck,
   ruleNoMemoryLimit,
   ruleMemReservationExceedsLimit,
+  ruleUlimitSoftExceedsHard,
   ruleOomKillDisable,
   ruleNoPidsLimit,
   ruleNoCpuLimit,

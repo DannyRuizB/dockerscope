@@ -212,3 +212,30 @@ test('expose entries are surfaced as strings; absence is an empty list', () => {
   assert.equal(JSON.stringify(a.expose), JSON.stringify(['9090', '8000-8010']));
   assert.equal(JSON.stringify(b.expose), JSON.stringify([]));
 });
+
+test('parseCompose normalizes ulimits: single number sets both, mapping keeps soft/hard, unreadable becomes null', () => {
+  const yaml = [
+    'services:',
+    '  app:',
+    '    image: nginx:1.27',
+    '    ulimits:',
+    '      nproc: 65535',
+    '      nofile:',
+    '        soft: 20000',
+    '        hard: "40000"',
+    '      core:',
+    '        soft: -1',
+    '        hard: ${CORE_HARD}',
+    '  bare:',
+    '    image: redis:7',
+  ].join('\n');
+  const model = DS.parseCompose(yaml);
+  const app = model.services.find((s) => s.name === 'app');
+  // Cross-realm objects: compare by value.
+  assert.deepEqual(JSON.parse(JSON.stringify(app.ulimits)), [
+    { name: 'nproc', soft: 65535, hard: 65535 },
+    { name: 'nofile', soft: 20000, hard: 40000 },
+    { name: 'core', soft: -1, hard: null },
+  ]);
+  assert.deepEqual(JSON.parse(JSON.stringify(model.services.find((s) => s.name === 'bare').ulimits)), []);
+});
