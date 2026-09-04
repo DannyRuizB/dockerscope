@@ -65,6 +65,8 @@ services:
 
   # Database published to the world with a hardcoded password.
   db:
+    logging:                       # log-rotation-keeps-one-file (warn) — max-size alone: every rotation replaces the ONLY file (measured: 600 lines written, 6 left)
+      options: { max-size: "10m" }
     image: postgres:16
     mem_limit: 256m                  # a hard ceiling…
     mem_reservation: 512m            # mem-reservation-exceeds-limit (error) — soft floor above the ceiling; the daemon refuses to create it

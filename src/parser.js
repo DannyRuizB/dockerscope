@@ -129,6 +129,7 @@ window.DockerScope.parseCompose = function (yamlText, fileMap) {
       // Log rotation: the driver name (null = compose default, json-file)
       // and the max-size option, if any — what no-log-limit judges.
       logDriver: parseLogDriver(raw),
+      logOptions: (raw.logging && typeof raw.logging === "object" && raw.logging.options && typeof raw.logging.options === "object") ? raw.logging.options : null,
       logMaxSize: parseLogMaxSize(raw),
       healthcheck: raw.healthcheck && typeof raw.healthcheck === "object" ? raw.healthcheck : null,
       volumes: parseVolumes(raw.volumes, topVolumeSet, warnings, name),
