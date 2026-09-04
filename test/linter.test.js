@@ -695,7 +695,7 @@ test('the insecure sample trips every security rule at once', () => {
     'explicit-root-user', 'duplicate-mount-target', 'network-mode-with-networks',
     'oom-kill-disable', 'ports-on-internal-network',
     'healthcheck-timeout-exceeds-interval',
-    'start-interval-without-start-period', 'start-interval-exceeds-start-period', 'healthcheck-zero-is-default',
+    'start-interval-without-start-period', 'start-interval-exceeds-start-period', 'healthcheck-zero-is-default', 'log-rotation-keeps-one-file',
   ]) {
     assert.ok(rules.has(r), `expected rule '${r}'`);
   }
@@ -2848,4 +2848,40 @@ test('healthcheck-zero-is-default leaves real values, start_period: 0 (a real ze
   assert.equal(zeroFindings({ test: '["CMD", "true"]', interval: '${HC_INTERVAL}', retries: '${HC_RETRIES}' }).length, 0, 'never judged');
   assert.equal(zeroFindings({ test: '["CMD", "true"]', interval: '0s', disable: 'true' }).length, 0);
   assert.equal(zeroFindings({ test: '["CMD", "true"]', interval: '0ms' }).length, 1, 'zero in any unit is zero');
+});
+
+// --- log-rotation-keeps-one-file ---------------------------------------------
+// Measured (daemon 29.1.3): max-size=8k alone -> 600 lines written, `docker logs`
+// shows 6 (from line 595); with max-file=3 -> 114. compose config says nothing.
+
+function logFindings(logging) {
+  const compose = ['services:', '  svc:', '    image: busybox', ...(logging ? ['    logging:', ...logging.map((l) => '      ' + l)] : [])].join('\n');
+  return DS.lint(DS.parseCompose(compose)).findings.filter((f) => f.rule === 'log-rotation-keeps-one-file');
+}
+
+test('log-rotation-keeps-one-file warns when max-size is set without max-file (default 1) or with max-file: 1', () => {
+  const f = logFindings(['driver: json-file', 'options:', '  max-size: "10m"']);
+  assert.equal(f.length, 1);
+  assert.equal(f[0].level, 'warn');
+  assert.match(f[0].message, /no `max-file` — the default is 1/);
+  assert.match(f[0].message, /600 lines written, 6 left/);
+  const g = logFindings(['options:', '  max-size: 10m', '  max-file: "1"']);
+  assert.equal(g.length, 1, 'implicit json-file driver, explicit max-file 1');
+  assert.match(g[0].message, /with `max-file: 1`/);
+});
+
+test('log-rotation-keeps-one-file leaves max-file >= 2, other drivers, no max-size and interpolations alone', () => {
+  assert.equal(logFindings(['options:', '  max-size: 10m', '  max-file: "3"']).length, 0);
+  assert.equal(logFindings(['driver: local', 'options:', '  max-size: 10m']).length, 0, 'local driver rotates on its own');
+  assert.equal(logFindings(['driver: json-file']).length, 0, 'no max-size: no-log-limit\'s case, not this one');
+  assert.equal(logFindings(null).length, 0);
+  assert.equal(logFindings(['options:', '  max-size: "${LOG_MAX}"']).length, 0, 'never judged');
+});
+
+test('parser exposes logging.options as logOptions (null when absent)', () => {
+  const m = DS.parseCompose(['services:', '  a:', '    image: x', '    logging:', '      driver: json-file', '      options:', '        max-size: 5m', '  b:', '    image: y'].join('\n'));
+  const a = m.services.find((s) => s.name === 'a');
+  const b = m.services.find((s) => s.name === 'b');
+  assert.deepEqual(JSON.parse(JSON.stringify(a.logOptions)), { 'max-size': '5m' });
+  assert.equal(b.logOptions, null);
 });

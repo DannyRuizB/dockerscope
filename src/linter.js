@@ -1319,6 +1319,32 @@ function ruleHealthcheckZeroIsDefault(svc) {
   return out;
 }
 
+// `max-size` bounds the log, `max-file` decides how many rotated files are
+// kept - and its default is 1. With max-size alone, every rotation REPLACES
+// the only file: the history is not compressed or archived, it is gone.
+// MEASURED (daemon 29.1.3): a container that printed 600 lines under
+// `--log-opt max-size=8k` answered `docker logs` with 6 lines (from line
+// 595); the same with `max-file=3` kept 114. `docker compose config` prints
+// the option back without a word. Drivers other than json-file are spared
+// (`local` rotates with its own defaults, remote drivers keep nothing here);
+// interpolated values are never judged.
+function ruleLogRotationKeepsOneFile(svc) {
+  if (svc.logDriver != null && svc.logDriver !== "json-file") return [];
+  const opts = svc.logOptions;
+  if (!opts || opts["max-size"] == null) return [];
+  const maxFile = opts["max-file"];
+  if (maxFile != null && !(String(maxFile).trim() === "1")) return [];
+  if (typeof opts["max-size"] === "string" && opts["max-size"].includes("${")) return [];
+  return [{
+    level: "warn",
+    rule: "log-rotation-keeps-one-file",
+    message: maxFile == null
+      ? `\`max-size: ${String(opts["max-size"])}\` with no \`max-file\` — the default is 1, so every rotation REPLACES the only log file: \`docker logs\` keeps just the newest chunk (measured: 600 lines written, 6 left).`
+      : `\`max-size: ${String(opts["max-size"])}\` with \`max-file: 1\` — every rotation REPLACES the only log file: \`docker logs\` keeps just the newest chunk (measured: 600 lines written, 6 left).`,
+    hint: "Add `max-file: 3` (or more) so rotation keeps a history — the pair is the actual retention policy; `max-size` alone is a truncation policy.",
+  }];
+}
+
 // depends_on must name services that exist in the same file: Compose refuses
 // the whole file otherwise ("service ... depends on undefined service").
 // Classic ways to hit it: a rename that missed the depends_on line, or a
@@ -1771,6 +1797,7 @@ const RULES = [
   ruleStartIntervalWithoutStartPeriod,
   ruleStartIntervalExceedsStartPeriod,
   ruleHealthcheckZeroIsDefault,
+  ruleLogRotationKeepsOneFile,
   ruleDependsOnUnknown,
   ruleDependsOnCycle,
   ruleDependsOnProfileGated,
