@@ -1286,6 +1286,39 @@ function ruleStartIntervalExceedsStartPeriod(svc) {
   }];
 }
 
+// A zero in a healthcheck timing field is not "immediately", "no timeout" or
+// "no retries" - it is the daemon's word for UNSET, and the default steps in:
+// interval 30s, timeout 30s, retries 3. MEASURED (daemon 29.1.3): a container
+// with `--health-interval 0s` sat in `starting` with zero probes at 7 s (the
+// default 30 s cadence); `--health-retries 0` created a container whose
+// Config.Healthcheck carries no Retries at all (= 3); `--health-timeout 0s`
+// likewise drops Timeout (= 30 s). `docker compose config` prints the zeros
+// back without a word and `up` strips them before the create. start_period is
+// the exception - its zero is a real zero (no grace, measured in v0.50) - so
+// it is not judged here. Interpolated values are never judged.
+function ruleHealthcheckZeroIsDefault(svc) {
+  const hc = svc.healthcheck;
+  if (!hc || hc.disable === true) return [];
+  const defaults = { interval: "30s", timeout: "30s", retries: "3" };
+  const out = [];
+  for (const key of ["interval", "timeout", "retries"]) {
+    if (hc[key] == null) continue;
+    const raw = hc[key];
+    const isZero = key === "retries"
+      ? raw === 0 || String(raw).trim() === "0"
+      : parseComposeDuration(raw) === 0;
+    if (!isZero) continue;
+    const reads = key === "interval" ? "probe as fast as possible" : key === "timeout" ? "never time the probe out" : "no retries - unhealthy on the first failure";
+    out.push({
+      level: "warn",
+      rule: "healthcheck-zero-is-default",
+      message: `\`healthcheck.${key}: ${String(raw)}\` reads like "${reads}", but zero is the daemon's word for UNSET: the default ${defaults[key]} applies (measured - with \`interval: 0s\` the first probe had not fired at 7 s; \`retries: 0\` leaves no Retries in the created container).`,
+      hint: `Write the value you mean (\`${key}: ${key === "retries" ? "1" : key === "interval" ? "5s" : "3s"}\`), or drop the key and take the default knowingly. \`compose config\` echoes the zero and \`up\` strips it - nothing warns.`,
+    });
+  }
+  return out;
+}
+
 // depends_on must name services that exist in the same file: Compose refuses
 // the whole file otherwise ("service ... depends on undefined service").
 // Classic ways to hit it: a rename that missed the depends_on line, or a
@@ -1737,6 +1770,7 @@ const RULES = [
   ruleHealthcheckTimeoutExceedsInterval,
   ruleStartIntervalWithoutStartPeriod,
   ruleStartIntervalExceedsStartPeriod,
+  ruleHealthcheckZeroIsDefault,
   ruleDependsOnUnknown,
   ruleDependsOnCycle,
   ruleDependsOnProfileGated,
