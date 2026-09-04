@@ -77,6 +77,7 @@ services:
       test: ["CMD-SHELL", "pg_isready -U postgres"]
       interval: 10s                  # healthcheck-no-start-period (warn) — boot failures count against retries
       start_interval: 2s             # start-interval-without-start-period (error) — no window to apply to: `config` is silent, `up` refuses the service
+      retries: 0                     # healthcheck-zero-is-default (warn) — reads like "no retries", is the daemon's word for unset: 3 applies
       timeout: 30s                   # healthcheck-timeout-exceeds-interval (warn) — "pg_isready was timing out, so I raised it":
                                      # interval is the PAUSE between probes, so a slow probe stretches the cycle to 40s and
                                      # unhealthy takes retries x that — and app's `condition: service_healthy` waits it out

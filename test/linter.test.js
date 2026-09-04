@@ -695,7 +695,7 @@ test('the insecure sample trips every security rule at once', () => {
     'explicit-root-user', 'duplicate-mount-target', 'network-mode-with-networks',
     'oom-kill-disable', 'ports-on-internal-network',
     'healthcheck-timeout-exceeds-interval',
-    'start-interval-without-start-period', 'start-interval-exceeds-start-period',
+    'start-interval-without-start-period', 'start-interval-exceeds-start-period', 'healthcheck-zero-is-default',
   ]) {
     assert.ok(rules.has(r), `expected rule '${r}'`);
   }
@@ -2817,4 +2817,35 @@ test('the two start_interval rules never fire together on one service', () => {
   for (const hc of [{ start_interval: '1s' }, { start_interval: '1s', start_period: '0s' }, { start_interval: '9s', start_period: '3s' }]) {
     assert.equal(siFindings({ test: '["CMD", "true"]', ...hc }).length, 1, JSON.stringify(hc));
   }
+});
+
+// --- healthcheck-zero-is-default -----------------------------------------------
+// Measured (daemon 29.1.3): interval 0s -> no probe at 7 s (default 30s);
+// retries 0 -> Retries absent from the created config (default 3); timeout 0s
+// -> Timeout absent (default 30s). start_period: 0 is a real zero (v0.50).
+
+function zeroFindings(hc) {
+  const compose = ['services:', '  svc:', '    image: busybox', '    healthcheck:',
+    ...Object.entries(hc).map(([k, v]) => `      ${k}: ${v}`)].join('\n');
+  return DS.lint(DS.parseCompose(compose)).findings.filter((f) => f.rule === 'healthcheck-zero-is-default');
+}
+
+test('healthcheck-zero-is-default warns once per zeroed interval / timeout / retries and names the default that applies', () => {
+  const f = zeroFindings({ test: '["CMD", "true"]', interval: '0s', timeout: '0', retries: '0' });
+  assert.deepEqual(JSON.parse(JSON.stringify(f.map((x) => [x.level, x.message.slice(0, 26)]))), [
+    ['warn', '`healthcheck.interval: 0s`'],
+    ['warn', '`healthcheck.timeout: 0` r'],
+    ['warn', '`healthcheck.retries: 0` r'],
+  ]);
+  assert.match(f[0].message, /the default 30s applies/);
+  assert.match(f[2].message, /the default 3 applies/);
+  assert.match(f[0].hint, /`compose config` echoes the zero and `up` strips it/);
+});
+
+test('healthcheck-zero-is-default leaves real values, start_period: 0 (a real zero), interpolations and disabled healthchecks alone', () => {
+  assert.equal(zeroFindings({ test: '["CMD", "true"]', interval: '5s', timeout: '3s', retries: '1' }).length, 0);
+  assert.equal(zeroFindings({ test: '["CMD", "true"]', interval: '10s', start_period: '0s' }).length, 0, 'start_period zero is real (v0.50)');
+  assert.equal(zeroFindings({ test: '["CMD", "true"]', interval: '${HC_INTERVAL}', retries: '${HC_RETRIES}' }).length, 0, 'never judged');
+  assert.equal(zeroFindings({ test: '["CMD", "true"]', interval: '0s', disable: 'true' }).length, 0);
+  assert.equal(zeroFindings({ test: '["CMD", "true"]', interval: '0ms' }).length, 1, 'zero in any unit is zero');
 });
