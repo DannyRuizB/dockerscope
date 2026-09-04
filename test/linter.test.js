@@ -75,6 +75,7 @@ test('a fully-specified service produces no findings', () => {
     '      driver: json-file',
     '      options:',
     '        max-size: "10m"',
+    '        max-file: "3"',
     '    healthcheck:',
     '      test: ["CMD", "true"]',
     '      start_period: 10s',
