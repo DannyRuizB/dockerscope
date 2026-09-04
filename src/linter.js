@@ -1235,6 +1235,57 @@ function ruleHealthcheckTimeoutExceedsInterval(svc) {
   }];
 }
 
+// `start_interval` is the probe cadence DURING `start_period` (Compose ≥ 2.20,
+// API 1.44): probe often while the service boots, at `interval` afterwards.
+// Without a `start_period` there is no window for it to apply to, and Compose
+// refuses to create the service — at `up`, not at `config`. MEASURED (compose
+// v5.3.1, daemon 29.1.3): `compose config` prints both keys without a word;
+// `compose up` dies with "healthcheck.start_interval requires
+// healthcheck.start_period to be set" and aborts the batch — the sibling
+// services of the same `up` were never created. The daemon itself accepts
+// the pair (`docker run --health-start-interval 1s` with no start period
+// runs) and then never uses it: probes landed at 10.1 s and 20.1 s — the
+// plain `interval` — as if start_interval were not there.
+function ruleStartIntervalWithoutStartPeriod(svc) {
+  const hc = svc.healthcheck;
+  if (!hc || hc.disable === true) return [];
+  if (hc.start_interval == null || hc.start_period != null) return [];
+  return [{
+    level: "error",
+    rule: "start-interval-without-start-period",
+    message: `\`healthcheck.start_interval: ${String(hc.start_interval)}\` without a \`start_period\` — the fast boot cadence has no window to apply to, and Compose refuses to create the service ("start_interval requires start_period to be set") at \`up\`, not at \`config\`.`,
+    hint: "Add `start_period` (the boot window, e.g. `30s`) so `start_interval` has a window to run in, or drop `start_interval` and let `interval` alone pace the probes.",
+  }];
+}
+
+// The mirror: a `start_period` that is present but zero, or not longer than
+// `start_interval`, gives the fast cadence a window it can never repeat in.
+// MEASURED: with `start_period: 0s` (Compose accepts it — "set" is set) the
+// probes landed at 10.1 s / 20.1 s, i.e. `interval`, start_interval ignored;
+// with `start_interval: 5s` inside a `start_period: 3s` they landed at
+// 5.1 s / 15.2 s — ONE probe at the fast cadence, already past the window,
+// then `interval`. Compose is silent both times. `>=` fires: with equal
+// values the window closes exactly as the first fast probe falls due.
+// Unreadable durations (interpolations) are never judged.
+function ruleStartIntervalExceedsStartPeriod(svc) {
+  const hc = svc.healthcheck;
+  if (!hc || hc.disable === true) return [];
+  if (hc.start_interval == null || hc.start_period == null) return [];
+  const si = parseComposeDuration(hc.start_interval);
+  const sp = parseComposeDuration(hc.start_period);
+  if (si == null || sp == null) return [];
+  if (sp > 0 && si < sp) return [];
+  const zero = sp === 0;
+  return [{
+    level: "warn",
+    rule: "start-interval-exceeds-start-period",
+    message: zero
+      ? `\`healthcheck.start_interval\` (${humanMs(si)}) with \`start_period: ${String(hc.start_period)}\` — a zero-length boot window: the fast cadence never runs and probes pace at \`interval\` as if it were not there (measured: 10.1 s, 20.1 s with interval 10s).`
+      : `\`healthcheck.start_interval\` (${humanMs(si)}) is not shorter than its \`start_period\` (${humanMs(sp)}) — the boot window closes before the fast cadence can repeat: at most one probe at ${humanMs(si)}, then \`interval\` (measured: 5.1 s, 15.2 s for 5s inside 3s).`,
+    hint: "Make `start_period` the boot window (e.g. `30s`) and `start_interval` a fraction of it (e.g. `2s`), so the service is probed often while booting and at `interval` afterwards.",
+  }];
+}
+
 // depends_on must name services that exist in the same file: Compose refuses
 // the whole file otherwise ("service ... depends on undefined service").
 // Classic ways to hit it: a rename that missed the depends_on line, or a
@@ -1684,6 +1735,8 @@ const RULES = [
   ruleContainerNameWithReplicas,
   ruleHealthcheckNoStartPeriod,
   ruleHealthcheckTimeoutExceedsInterval,
+  ruleStartIntervalWithoutStartPeriod,
+  ruleStartIntervalExceedsStartPeriod,
   ruleDependsOnUnknown,
   ruleDependsOnCycle,
   ruleDependsOnProfileGated,

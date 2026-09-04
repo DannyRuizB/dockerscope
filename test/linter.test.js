@@ -695,6 +695,7 @@ test('the insecure sample trips every security rule at once', () => {
     'explicit-root-user', 'duplicate-mount-target', 'network-mode-with-networks',
     'oom-kill-disable', 'ports-on-internal-network',
     'healthcheck-timeout-exceeds-interval',
+    'start-interval-without-start-period', 'start-interval-exceeds-start-period',
   ]) {
     assert.ok(rules.has(r), `expected rule '${r}'`);
   }
@@ -2771,4 +2772,49 @@ test('shell-pid1-no-init: an init in a visible Dockerfile ENTRYPOINT exempts the
   const plain = { ...files, Dockerfile: ['FROM node:22-alpine', 'CMD ["npm", "start"]'].join('\n') };
   const model2 = DS.parseCompose(plain['docker-compose.yml'], new Map(Object.entries(plain)));
   assert.equal(DS.lint(model2).findings.filter((f) => f.rule === 'shell-pid1-no-init').length, 1);
+});
+
+// --- start_interval vs start_period --------------------------------------------
+// Measured (compose v5.3.1 / daemon 29.1.3): start_interval without start_period
+// dies at `up` ("start_interval requires start_period to be set"), `config` is
+// silent; with start_period 0s or start_interval >= start_period the fast
+// cadence never repeats (probes at 10.1/20.1 s, and 5.1/15.2 s).
+
+function siFindings(hc) {
+  const compose = ['services:', '  svc:', '    image: busybox', '    healthcheck:',
+    ...Object.entries(hc).map(([k, v]) => `      ${k}: ${v}`)].join('\n');
+  return DS.lint(DS.parseCompose(compose)).findings.filter((f) => f.rule.startsWith('start-interval'));
+}
+
+test('start-interval-without-start-period fires (error) only when start_interval is set and start_period is absent', () => {
+  const f = siFindings({ test: '["CMD", "true"]', interval: '10s', start_interval: '1s' });
+  assert.equal(f.length, 1);
+  assert.equal(f[0].rule, 'start-interval-without-start-period');
+  assert.equal(f[0].level, 'error');
+  assert.match(f[0].message, /refuses to create the service .* at `up`, not at `config`/);
+  assert.equal(siFindings({ test: '["CMD", "true"]', interval: '10s' }).length, 0, 'no start_interval: nothing to say');
+  assert.equal(siFindings({ test: '["CMD", "true"]', start_interval: '1s', start_period: '30s' }).length, 0, 'a real window: fine');
+  assert.equal(siFindings({ test: '["CMD", "true"]', start_interval: '1s', disable: 'true' }).length, 0, 'disabled healthcheck: exempt');
+});
+
+test('start-interval-exceeds-start-period fires (warn) for a zero window and for start_interval >= start_period, quiet below it', () => {
+  const zero = siFindings({ test: '["CMD", "true"]', interval: '10s', start_interval: '1s', start_period: '0s' });
+  assert.deepEqual(JSON.parse(JSON.stringify(zero.map((f) => [f.rule, f.level]))), [['start-interval-exceeds-start-period', 'warn']]);
+  assert.match(zero[0].message, /zero-length boot window/);
+  const over = siFindings({ test: '["CMD", "true"]', interval: '10s', start_interval: '5s', start_period: '3s' });
+  assert.equal(over.length, 1);
+  assert.match(over[0].message, /5s\) is not shorter than its `start_period` \(3s\)/);
+  assert.match(over[0].message, /at most one probe at 5s/);
+  const equal = siFindings({ test: '["CMD", "true"]', start_interval: '5s', start_period: '5s' });
+  assert.equal(equal.length, 1, 'equal values: the window closes as the first fast probe falls due');
+  assert.equal(siFindings({ test: '["CMD", "true"]', start_interval: '2s', start_period: '30s' }).length, 0);
+  assert.equal(siFindings({ test: '["CMD", "true"]', start_interval: '1m', start_period: '90s' }).length, 0, 'mixed units, still below');
+  assert.equal(siFindings({ test: '["CMD", "true"]', start_interval: '${HC_SI}', start_period: '3s' }).length, 0, 'unreadable duration: never judged');
+  assert.equal(siFindings({ test: '["CMD", "true"]', start_interval: '5s', start_period: '0s', disable: 'true' }).length, 0, 'disabled: exempt');
+});
+
+test('the two start_interval rules never fire together on one service', () => {
+  for (const hc of [{ start_interval: '1s' }, { start_interval: '1s', start_period: '0s' }, { start_interval: '9s', start_period: '3s' }]) {
+    assert.equal(siFindings({ test: '["CMD", "true"]', ...hc }).length, 1, JSON.stringify(hc));
+  }
 });
