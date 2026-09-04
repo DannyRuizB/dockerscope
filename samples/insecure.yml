@@ -35,6 +35,8 @@ services:
       - seccomp:unconfined           # security-unconfined (error) — syscall filter off
     healthcheck:
       test: ["curl", "-f", "http://localhost:9100/health"]   # healthcheck-test-invalid (error) — list form needs CMD / CMD-SHELL / NONE first
+      start_period: 0s               # start-interval-exceeds-start-period (warn) — a zero-length boot window: the fast cadence never runs (measured: probes at interval)
+      start_interval: 2s
     volumes:
       - /etc:/host-etc               # sensitive-host-mount (error) — read-write host config
       - /proc:/host-proc:ro          # sensitive-host-mount (warn) — read-only kernel surface
@@ -74,6 +76,7 @@ services:
     healthcheck:                     # defined… but see app's depends_on below
       test: ["CMD-SHELL", "pg_isready -U postgres"]
       interval: 10s                  # healthcheck-no-start-period (warn) — boot failures count against retries
+      start_interval: 2s             # start-interval-without-start-period (error) — no window to apply to: `config` is silent, `up` refuses the service
       timeout: 30s                   # healthcheck-timeout-exceeds-interval (warn) — "pg_isready was timing out, so I raised it":
                                      # interval is the PAUSE between probes, so a slow probe stretches the cycle to 40s and
                                      # unhealthy takes retries x that — and app's `condition: service_healthy` waits it out
