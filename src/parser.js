@@ -87,6 +87,14 @@ window.DockerScope.parseCompose = function (yamlText, fileMap) {
       ports: parsePorts(raw.ports, warnings, name),
       environment: parseEnvironment(raw.environment),
       restart: typeof raw.restart === "string" ? raw.restart : null,
+      // deploy.restart_policy.condition (none|any|on-failure). MEASURED
+      // (compose v5.3.1): when BOTH this and `restart:` are set, deploy
+      // wins and `restart:` is silently ignored - so it is parsed to be
+      // compared against `restart:`.
+      restartPolicyCondition: (raw.deploy && typeof raw.deploy === "object"
+        && raw.deploy.restart_policy && typeof raw.deploy.restart_policy === "object"
+        && typeof raw.deploy.restart_policy.condition === "string")
+        ? raw.deploy.restart_policy.condition : null,
       // stop_signal is the signal `docker stop` sends first. A string
       // ("SIGTERM", "SIGQUIT") or an int (15); normalized to a trimmed
       // string so the linter can spot the uncatchable ones (SIGKILL/SIGSTOP).
