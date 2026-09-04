@@ -65,6 +65,10 @@ services:
 
   # Database published to the world with a hardcoded password.
   db:
+    restart: always                # restart-policy-conflict (warn) — deploy.restart_policy wins; this "always" is a silent lie (measured)
+    deploy:
+      restart_policy:
+        condition: none
     logging:                       # log-rotation-keeps-one-file (warn) — max-size alone: every rotation replaces the ONLY file (measured: 600 lines written, 6 left)
       options: { max-size: "10m" }
     image: postgres:16

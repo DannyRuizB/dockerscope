@@ -1345,6 +1345,33 @@ function ruleLogRotationKeepsOneFile(svc) {
   }];
 }
 
+// `restart:` and `deploy.restart_policy` both set is not belt-and-braces - they
+// COLLIDE, and deploy wins. MEASURED (compose v5.3.1, daemon 29.1.3): with
+// `restart: always` and `deploy.restart_policy.condition: none` the container
+// got RestartPolicy `no` and never restarted; `restart: on-failure:2` with
+// `condition: any` became `always` (the retry cap lost too). `docker compose
+// config` warns about neither. So a `restart:` next to a deploy policy is a
+// silent lie about what the container will do. Map both to {no, always,
+// on-failure} and, when they disagree, say what actually happens.
+function ruleRestartPolicyConflict(svc) {
+  const r = svc.restart;
+  const cond = svc.restartPolicyCondition;
+  if (r == null || cond == null) return [];
+  const fromRestart = { "no": "no", "always": "always", "unless-stopped": "always" };
+  const restNorm = fromRestart[String(r).trim()] ?? (String(r).trim().startsWith("on-failure") ? "on-failure" : null);
+  const condNorm = { none: "no", any: "always", "on-failure": "on-failure" }[String(cond).trim()] ?? null;
+  const effective = condNorm ?? "the deploy policy";
+  const disagree = restNorm && condNorm && restNorm !== condNorm;
+  return [{
+    level: "warn",
+    rule: "restart-policy-conflict",
+    message: disagree
+      ? `\`restart: ${r}\` and \`deploy.restart_policy.condition: ${cond}\` disagree — deploy wins (measured), so the container's policy is **${effective}**, not what \`restart:\` says.`
+      : `\`restart: ${r}\` and \`deploy.restart_policy.condition: ${cond}\` are both set — deploy silently wins and \`restart:\` is ignored (measured); keep one so the file says what the container does.`,
+    hint: "Set the restart behaviour in one place. `docker compose up` honours `deploy.restart_policy`, but so does `restart:` when it is alone — pick whichever your tooling standardises on and delete the other.",
+  }];
+}
+
 // depends_on must name services that exist in the same file: Compose refuses
 // the whole file otherwise ("service ... depends on undefined service").
 // Classic ways to hit it: a rename that missed the depends_on line, or a
@@ -1798,6 +1825,7 @@ const RULES = [
   ruleStartIntervalExceedsStartPeriod,
   ruleHealthcheckZeroIsDefault,
   ruleLogRotationKeepsOneFile,
+  ruleRestartPolicyConflict,
   ruleDependsOnUnknown,
   ruleDependsOnCycle,
   ruleDependsOnProfileGated,

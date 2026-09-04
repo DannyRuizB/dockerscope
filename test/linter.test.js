@@ -696,7 +696,7 @@ test('the insecure sample trips every security rule at once', () => {
     'explicit-root-user', 'duplicate-mount-target', 'network-mode-with-networks',
     'oom-kill-disable', 'ports-on-internal-network',
     'healthcheck-timeout-exceeds-interval',
-    'start-interval-without-start-period', 'start-interval-exceeds-start-period', 'healthcheck-zero-is-default', 'log-rotation-keeps-one-file',
+    'start-interval-without-start-period', 'start-interval-exceeds-start-period', 'healthcheck-zero-is-default', 'log-rotation-keeps-one-file', 'restart-policy-conflict',
   ]) {
     assert.ok(rules.has(r), `expected rule '${r}'`);
   }
@@ -2885,4 +2885,42 @@ test('parser exposes logging.options as logOptions (null when absent)', () => {
   const b = m.services.find((s) => s.name === 'b');
   assert.deepEqual(JSON.parse(JSON.stringify(a.logOptions)), { 'max-size': '5m' });
   assert.equal(b.logOptions, null);
+});
+
+// --- restart-policy-conflict ---------------------------------------------------
+// Measured (compose v5.3.1 / daemon 29.1.3): both set -> deploy wins, restart:
+// ignored. restart: always + condition none -> no restart (0); on-failure:2 +
+// any -> always (cap lost). compose config warns about neither.
+
+function conflictFindings(restart, condition) {
+  const lines = ['services:', '  svc:', '    image: busybox'];
+  if (restart != null) lines.push(`    restart: "${restart}"`);
+  if (condition != null) lines.push('    deploy:', '      restart_policy:', `        condition: ${condition}`);
+  return DS.lint(DS.parseCompose(lines.join('\n'))).findings.filter((f) => f.rule === 'restart-policy-conflict');
+}
+
+test('restart-policy-conflict fires when both are set, naming the effective policy when they disagree', () => {
+  const dis = conflictFindings('always', 'none');
+  assert.equal(dis.length, 1);
+  assert.equal(dis[0].level, 'warn');
+  assert.match(dis[0].message, /disagree — deploy wins .*policy is \*\*no\*\*, not what `restart:` says/);
+  const dis2 = conflictFindings('on-failure:2', 'any');
+  assert.match(dis2[0].message, /policy is \*\*always\*\*/);
+  const agree = conflictFindings('always', 'any');
+  assert.equal(agree.length, 1);
+  assert.match(agree[0].message, /both set — deploy silently wins/);
+});
+
+test('restart-policy-conflict is quiet when only one side is set (or neither)', () => {
+  assert.equal(conflictFindings('always', null).length, 0);
+  assert.equal(conflictFindings(null, 'any').length, 0);
+  assert.equal(conflictFindings(null, null).length, 0);
+});
+
+test('parser exposes deploy.restart_policy.condition as restartPolicyCondition', () => {
+  const m = DS.parseCompose(['services:', '  a:', '    image: x', '    restart: always', '    deploy:', '      restart_policy:', '        condition: none', '  b:', '    image: y'].join('\n'));
+  const a = m.services.find((s) => s.name === 'a');
+  const b = m.services.find((s) => s.name === 'b');
+  assert.equal(a.restartPolicyCondition, 'none');
+  assert.equal(b.restartPolicyCondition, null);
 });
