@@ -697,6 +697,7 @@ test('the insecure sample trips every security rule at once', () => {
     'oom-kill-disable', 'ports-on-internal-network',
     'healthcheck-timeout-exceeds-interval',
     'start-interval-without-start-period', 'start-interval-exceeds-start-period', 'healthcheck-zero-is-default', 'log-rotation-keeps-one-file', 'restart-policy-conflict',
+    'replicas-with-fixed-port',
   ]) {
     assert.ok(rules.has(r), `expected rule '${r}'`);
   }
@@ -2923,4 +2924,61 @@ test('parser exposes deploy.restart_policy.condition as restartPolicyCondition',
   const b = m.services.find((s) => s.name === 'b');
   assert.equal(a.restartPolicyCondition, 'none');
   assert.equal(b.restartPolicyCondition, null);
+});
+
+
+// --- replicas-with-fixed-port ---------------------------------------------
+// Measured (compose v5.3.1 / daemon 29.1.3): "18080:80" + replicas 3 -> one
+// replica up, the others "Bind for 0.0.0.0:18080 failed: port is already
+// allocated"; the legacy `scale: 2` fails the same way; "18090-18092:80" +
+// replicas 3 -> all three up, one port each; "80" (no host port) -> Docker
+// assigns 32768/32769; "18100-18101:80" + replicas 3 -> the third dies with
+// "all ports are allocated". compose config accepts every one of them.
+
+function replicaPortFindings(yaml) {
+  return DS.lint(DS.parseCompose(yaml)).findings.filter((f) => f.rule === 'replicas-with-fixed-port');
+}
+
+test('replicas-with-fixed-port: a single published port under replicas > 1 is an error naming the port', () => {
+  const f = replicaPortFindings(['services:', '  web:', '    image: busybox',
+    '    ports: ["18080:80"]', '    deploy:', '      replicas: 3'].join('\n'));
+  assert.equal(f.length, 1);
+  assert.equal(f[0].level, 'error');
+  assert.match(f[0].message, /replicas: 3.*18080/);
+  assert.match(f[0].message, /port is already allocated/);
+});
+
+test('replicas-with-fixed-port: the legacy service-level scale counts too, and the host IP is kept in the message', () => {
+  const f = replicaPortFindings(['services:', '  web:', '    image: busybox',
+    '    ports: ["127.0.0.1:18095:80"]', '    scale: 2'].join('\n'));
+  assert.equal(f.length, 1);
+  assert.match(f[0].message, /127\.0\.0\.1:18095/);
+});
+
+test('replicas-with-fixed-port: a range at least as wide as the replica count is fine, a shorter one is not', () => {
+  const wide = replicaPortFindings(['services:', '  web:', '    image: busybox',
+    '    ports: ["18090-18092:80"]', '    deploy:', '      replicas: 3'].join('\n'));
+  assert.equal(wide.length, 0);
+  const short = replicaPortFindings(['services:', '  web:', '    image: busybox',
+    '    ports: ["18100-18101:80"]', '    deploy:', '      replicas: 3'].join('\n'));
+  assert.equal(short.length, 1);
+  assert.match(short[0].message, /holds 2 host ports/);
+  assert.match(short[0].message, /all ports are allocated/);
+});
+
+test('replicas-with-fixed-port: no host port, one replica, or an interpolated port are all left alone', () => {
+  assert.equal(replicaPortFindings(['services:', '  web:', '    image: busybox',
+    '    ports: ["80"]', '    deploy:', '      replicas: 2'].join('\n')).length, 0);
+  assert.equal(replicaPortFindings(['services:', '  web:', '    image: busybox',
+    '    ports: ["18080:80"]', '    deploy:', '      replicas: 1'].join('\n')).length, 0);
+  assert.equal(replicaPortFindings(['services:', '  web:', '    image: busybox',
+    '    ports: ["${HOST_PORT}:80"]', '    deploy:', '      replicas: 3'].join('\n')).length, 0);
+});
+
+test('replicas-with-fixed-port: the long port syntax is judged the same as the short one', () => {
+  const f = replicaPortFindings(['services:', '  web:', '    image: busybox',
+    '    ports:', '      - target: 80', '        published: 18080', '        protocol: tcp',
+    '    deploy:', '      replicas: 4'].join('\n'));
+  assert.equal(f.length, 1);
+  assert.match(f[0].message, /18080/);
 });

@@ -1372,6 +1372,49 @@ function ruleRestartPolicyConflict(svc) {
   }];
 }
 
+// A fixed published port is a single host port, and a host port belongs to ONE
+// container. Ask Compose for several replicas of a service that publishes one
+// and the file is accepted in full - `docker compose config` says nothing -
+// then `up` starts the first replica and the rest die on the daemon.
+// MEASURED (compose v5.3.1, daemon 29.1.3):
+//   ports ["18080:80"] + deploy.replicas 3 -> ds-web-2 running, ds-web-1
+//     "Bind for 0.0.0.0:18080 failed: port is already allocated", ds-web-3
+//     never created. The stack is left HALF up, which is the dangerous part:
+//     `up` exits non-zero but one replica answers, so a smoke test passes.
+//   ports ["18095:80"] + the legacy service-level `scale: 2` -> same failure.
+//   ports ["18090-18092:80"] + replicas 3 -> all three up, one port each.
+//   ports ["80"] (no host port) + replicas 2 -> 32768 and 32769, all up.
+//   ports ["18100-18101:80"] + replicas 3 -> two up, the third "all ports are
+//     allocated" - a range SHORTER than the replica count fails the same way.
+// So: a published single port, or a range with fewer ports than replicas.
+function ruleReplicasWithFixedPort(svc) {
+  if (!(svc.replicas > 1)) return [];
+  const out = [];
+  for (const p of svc.ports || []) {
+    const pub = p.published;
+    if (pub == null) continue;                       // no host port: Docker picks one per replica
+    let span = null;
+    if (typeof pub === "number") span = 1;
+    else if (typeof pub === "string") {
+      const m = pub.match(/^(\d+)-(\d+)$/);          // a range; anything else is an interpolation
+      if (!m) continue;
+      span = Number(m[2]) - Number(m[1]) + 1;
+      if (!(span > 0)) continue;
+    }
+    if (span == null || span >= svc.replicas) continue;
+    const where = p.host_ip ? `${p.host_ip}:${pub}` : String(pub);
+    out.push({
+      level: "error",
+      rule: "replicas-with-fixed-port",
+      message: span === 1
+        ? `\`replicas: ${svc.replicas}\` while publishing the fixed host port \`${where}\` — a host port belongs to one container, so only the first replica starts and the others die with *"port is already allocated"* (measured).`
+        : `\`replicas: ${svc.replicas}\` while publishing \`${where}\` — the range holds ${span} host port${span === 1 ? "" : "s"}, one short of a port per replica, so the extra replicas die with *"all ports are allocated"* (measured).`,
+      hint: "Publish a range at least as wide as the replica count (`18090-18092:80`), drop the host port so Docker assigns a free one per replica (`\"80\"`), or put the replicas behind a proxy / load balancer and publish only that. `docker compose config` accepts this file as it is — the failure only shows up at `up`, with part of the stack running.",
+    });
+  }
+  return out;
+}
+
 // depends_on must name services that exist in the same file: Compose refuses
 // the whole file otherwise ("service ... depends on undefined service").
 // Classic ways to hit it: a rename that missed the depends_on line, or a
@@ -1826,6 +1869,7 @@ const RULES = [
   ruleHealthcheckZeroIsDefault,
   ruleLogRotationKeepsOneFile,
   ruleRestartPolicyConflict,
+  ruleReplicasWithFixedPort,
   ruleDependsOnUnknown,
   ruleDependsOnCycle,
   ruleDependsOnProfileGated,
