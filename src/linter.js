@@ -277,6 +277,99 @@ function parseMemoryBytes(value) {
   return Math.round(n * (m[2] ? mult[m[2].toLowerCase()] : 1));
 }
 
+// Compose hands a memory size to the daemon as BYTES, and a number with no
+// unit IS bytes: `mem_limit: 512` written as "512 MB" reaches the daemon as
+// 512 bytes. `docker compose config` accepts it without a word (it prints
+// `mem_limit: "512"`), and `up` dies at container create with "Minimum memory
+// limit allowed is 6MB" — the container never exists. Measured (compose
+// v5.3.1, daemon 29): the floor is exactly 6 MiB (6291456 bytes creates,
+// 6291455 is refused), it applies to the reservation too ("Minimum memory
+// reservation allowed is 6MB"), and to both the legacy keys and
+// `deploy.resources` (whose memory must be a STRING — a bare YAML number
+// there is refused by `config` itself, so only the quoted "512" gets this
+// far). `4m` fails the same way. 0 means "no limit" and is
+// zero-limit-is-unlimited's business, not this rule's.
+const DAEMON_MIN_MEMORY = 6 * 1024 * 1024;
+function hasNoUnit(value) {
+  return /^\d+(?:\.\d+)?$/.test(String(value).trim());
+}
+function ruleMemoryBelowDaemonMinimum(svc) {
+  const out = [];
+  for (const [label, key, raw] of [
+    ["memory limit", "`mem_limit` / `deploy.resources.limits.memory`", svc.memoryLimit],
+    ["memory reservation", "`mem_reservation` / `deploy.resources.reservations.memory`", svc.memoryReservation],
+  ]) {
+    const bytes = parseMemoryBytes(raw);
+    if (bytes == null || bytes === 0 || bytes >= DAEMON_MIN_MEMORY) continue;
+    const unitless = hasNoUnit(raw);
+    out.push({
+      level: "error",
+      rule: "memory-below-daemon-minimum",
+      message: unitless
+        ? `${label} \`${raw}\` has no unit, so it means ${raw} BYTES — Compose accepts the file, and the daemon refuses to create the container ("Minimum ${label} allowed is 6MB").`
+        : `${label} \`${raw}\` is ${bytes} bytes, below the daemon's 6 MiB floor — Compose accepts the file, and the daemon refuses to create the container ("Minimum ${label} allowed is 6MB").`,
+      hint: unitless
+        ? `Add the unit you meant (\`${raw}M\` for megabytes) to ${key}: a bare number is bytes.`
+        : `Raise ${key} to at least \`6M\` — the daemon's minimum — or drop it.`,
+    });
+  }
+  return out;
+}
+
+// `memswap_limit` is memory PLUS swap, so it only means something next to a
+// memory limit, and it cannot be smaller than it. Both mistakes pass
+// `docker compose config` silently and fail at container create (measured,
+// compose v5.3.1 / daemon 29): no memory limit at all → "You should always
+// set the Memory limit when using Memoryswap limit"; below the limit (legacy
+// `mem_limit` or `deploy.resources.limits.memory`, the daemon sees one) →
+// "Minimum memoryswap limit should be larger than memory limit". EQUAL runs
+// (no swap at all), -1 runs (unlimited swap), and 0 is the same as not
+// setting it (measured: the daemon picks twice the limit).
+function ruleMemswapLimitInvalid(svc) {
+  if (svc.memswapLimit == null) return [];
+  const swap = parseMemoryBytes(svc.memswapLimit);
+  if (swap == null || swap === 0) return [];
+  const limit = parseMemoryBytes(svc.memoryLimit);
+  if (svc.memoryLimit == null || limit === 0) {
+    return [{
+      level: "error",
+      rule: "memswap-limit-invalid",
+      message: `\`memswap_limit: ${svc.memswapLimit}\` without a memory limit — memswap is memory PLUS swap and means nothing on its own; Compose accepts the file and the daemon refuses the container ("You should always set the Memory limit when using Memoryswap limit").`,
+      hint: "Set `mem_limit` (or `deploy.resources.limits.memory`) next to it, or remove `memswap_limit`.",
+    }];
+  }
+  if (limit == null || swap >= limit) return [];
+  return [{
+    level: "error",
+    rule: "memswap-limit-invalid",
+    message: `\`memswap_limit: ${svc.memswapLimit}\` is below the memory limit (\`${svc.memoryLimit}\`) — memswap is memory PLUS swap, so it can never be the smaller of the two; Compose accepts the file and the daemon refuses the container ("Minimum memoryswap limit should be larger than memory limit").`,
+    hint: `Set \`memswap_limit\` to at least the memory limit (equal = no swap at all, \`-1\` = unlimited swap), or remove it (the daemon then allows twice the limit).`,
+  }];
+}
+
+// `shm_size` sizes /dev/shm, and like every Compose size a bare number is
+// BYTES. Unlike the memory limits the daemon takes any value — measured
+// (daemon 29): `shm_size: 64` creates and RUNS, with a /dev/shm of one 4 KiB
+// page (`df`: 4.0K, 100% used after a 4 KiB write; an 8 KiB write stops at
+// 4096 bytes). Nothing fails at `up`; what fails is the workload that
+// actually uses shared memory — PostgreSQL's parallel workers, Chromium,
+// multiprocessing queues — hours later, as an out-of-space error far from
+// this line. Below 1 MiB is flagged: no real /dev/shm is that small on
+// purpose.
+function ruleShmSizeTiny(svc) {
+  const bytes = parseMemoryBytes(svc.shmSize);
+  if (bytes == null || bytes === 0 || bytes >= 1024 * 1024) return [];
+  const unitless = hasNoUnit(svc.shmSize);
+  return [{
+    level: "warn",
+    rule: "shm-size-tiny",
+    message: `\`shm_size: ${svc.shmSize}\` is ${bytes} bytes${unitless ? " (a bare number is BYTES)" : ""} — the container starts fine with a /dev/shm of a single 4 KiB page, and whatever uses shared memory (PostgreSQL parallel workers, Chromium, multiprocessing) fails later with "no space left on device".`,
+    hint: unitless
+      ? `Add the unit you meant (\`${svc.shmSize}m\` for megabytes); Docker's default is 64m.`
+      : "Raise it (Docker's default is `64m`), or drop the key to keep the default.",
+  }];
+}
+
 // `mem_reservation` is the SOFT floor (Docker keeps at least this much
 // available to the container under memory pressure); `mem_limit` is the HARD
 // ceiling. A floor above the ceiling is a contradiction, and the daemon says
@@ -1831,6 +1924,9 @@ const RULES = [
   ruleNoHealthcheck,
   ruleNoMemoryLimit,
   ruleMemReservationExceedsLimit,
+  ruleMemoryBelowDaemonMinimum,
+  ruleMemswapLimitInvalid,
+  ruleShmSizeTiny,
   ruleUlimitSoftExceedsHard,
   ruleZeroLimitIsUnlimited,
   ruleOomKillDisable,

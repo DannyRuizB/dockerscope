@@ -52,6 +52,7 @@ services:
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
     mem_limit: 256m
+    memswap_limit: 128m              # memswap-limit-invalid (error) — memory PLUS swap below the memory alone: `config` is silent, the daemon refuses the container
     pids_limit: 128
     cpus: "0.50"
     healthcheck:
@@ -78,6 +79,7 @@ services:
       nofile:
         soft: 65536                  # ulimit-soft-exceeds-hard (error) — soft above hard: `config` is silent, `up` dies inside the runtime
         hard: 1024
+    shm_size: 64                     # shm-size-tiny (warn) — a bare number is BYTES: /dev/shm is one 4 KiB page and Postgres' parallel workers fail later (measured)
     pids_limit: 0                    # zero-limit-is-unlimited (warn) — reads like a cap, is the absence of one (cgroup pids.max stays open)
     healthcheck:                     # defined… but see app's depends_on below
       test: ["CMD-SHELL", "pg_isready -U postgres"]
@@ -105,6 +107,7 @@ services:
   # mapping for a service whose every network is internal, and says nothing.
   metrics:
     image: grafana/grafana:11.1.0
+    mem_limit: 512                   # memory-below-daemon-minimum (error) — "512 MB" written without the unit is 512 BYTES; the daemon's floor is 6 MiB
     ports:
       - "127.0.0.1:3000:3000"        # ports-on-internal-network (warn) — the only network is internal, the mapping is dead
     pid: "service:app"               # shared-namespace (warn) — sees app's processes and reads its /proc/<pid>/environ
