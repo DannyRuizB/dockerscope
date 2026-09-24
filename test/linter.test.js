@@ -697,7 +697,7 @@ test('the insecure sample trips every security rule at once', () => {
     'oom-kill-disable', 'ports-on-internal-network',
     'healthcheck-timeout-exceeds-interval',
     'start-interval-without-start-period', 'start-interval-exceeds-start-period', 'healthcheck-zero-is-default', 'log-rotation-keeps-one-file', 'restart-policy-conflict',
-    'replicas-with-fixed-port',
+    'replicas-with-fixed-port', 'memory-below-daemon-minimum', 'memswap-limit-invalid', 'shm-size-tiny',
   ]) {
     assert.ok(rules.has(r), `expected rule '${r}'`);
   }
@@ -2981,4 +2981,74 @@ test('replicas-with-fixed-port: the long port syntax is judged the same as the s
     '    deploy:', '      replicas: 4'].join('\n'));
   assert.equal(f.length, 1);
   assert.match(f[0].message, /18080/);
+});
+
+
+// --- memory sizes: bare numbers are BYTES -----------------------------------
+// Measured (compose v5.3.1 / daemon 29): `mem_limit: 512` -> config prints
+// mem_limit "512" and `up` dies "Minimum memory limit allowed is 6MB"; the
+// floor is exactly 6291456 (6291455 refused); mem_reservation / deploy
+// reservations the same ("Minimum memory reservation allowed is 6MB").
+// memswap without a limit -> "You should always set the Memory limit when
+// using Memoryswap limit"; below the limit (legacy or deploy) -> "Minimum
+// memoryswap limit should be larger than memory limit"; equal, -1 and 0 run.
+// shm_size: 64 -> runs, /dev/shm is one 4 KiB page.
+
+function memFindings(yaml, rule) {
+  return DS.lint(DS.parseCompose(yaml)).findings.filter((f) => f.rule === rule);
+}
+const svc = (...lines) => ['services:', '  app:', '    image: busybox', ...lines].join('\n');
+
+test('memory-below-daemon-minimum: a bare number is bytes, and the error says so', () => {
+  const f = memFindings(svc('    mem_limit: 512'), 'memory-below-daemon-minimum');
+  assert.equal(f.length, 1);
+  assert.equal(f[0].level, 'error');
+  assert.match(f[0].message, /no unit, so it means 512 BYTES/);
+  assert.match(f[0].message, /Minimum memory limit allowed is 6MB/);
+  assert.match(f[0].hint, /`512M`/);
+});
+
+test('memory-below-daemon-minimum: the floor is exactly 6 MiB, for limits and reservations, legacy and deploy', () => {
+  assert.equal(memFindings(svc('    mem_limit: 6291456'), 'memory-below-daemon-minimum').length, 0);
+  assert.equal(memFindings(svc('    mem_limit: 6291455'), 'memory-below-daemon-minimum').length, 1);
+  assert.equal(memFindings(svc('    mem_limit: 6m'), 'memory-below-daemon-minimum').length, 0);
+  const four = memFindings(svc('    mem_limit: 4m'), 'memory-below-daemon-minimum');
+  assert.equal(four.length, 1);
+  assert.match(four[0].message, /4194304 bytes, below the daemon's 6 MiB floor/);
+  const res = memFindings(svc('    mem_reservation: 1k'), 'memory-below-daemon-minimum');
+  assert.match(res[0].message, /Minimum memory reservation allowed is 6MB/);
+  const dep = memFindings(svc('    deploy:', '      resources:', '        limits:', "          memory: '512'"), 'memory-below-daemon-minimum');
+  assert.equal(dep.length, 1);
+});
+
+test('memory-below-daemon-minimum: 0 (no limit) and interpolations are not judged here', () => {
+  assert.equal(memFindings(svc('    mem_limit: 0'), 'memory-below-daemon-minimum').length, 0);
+  assert.equal(memFindings(svc('    mem_limit: ${MEM}'), 'memory-below-daemon-minimum').length, 0);
+});
+
+test('memswap-limit-invalid: without a memory limit, and below it (legacy or deploy limit), is an error', () => {
+  const alone = memFindings(svc('    memswap_limit: 128m'), 'memswap-limit-invalid');
+  assert.equal(alone.length, 1);
+  assert.match(alone[0].message, /always set the Memory limit/);
+  const below = memFindings(svc('    mem_limit: 256m', '    memswap_limit: 128m'), 'memswap-limit-invalid');
+  assert.match(below[0].message, /should be larger than memory limit/);
+  const belowDeploy = memFindings(svc('    memswap_limit: 128m', '    deploy:', '      resources:', '        limits:', '          memory: 256m'), 'memswap-limit-invalid');
+  assert.equal(belowDeploy.length, 1);
+});
+
+test('memswap-limit-invalid: equal, -1 and 0 are fine (measured: all three run)', () => {
+  for (const v of ['256m', '-1', '0', '512m']) {
+    assert.equal(memFindings(svc('    mem_limit: 256m', `    memswap_limit: ${v}`), 'memswap-limit-invalid').length, 0, v);
+  }
+});
+
+test('shm-size-tiny: a bare number is bytes and gives a one-page /dev/shm; 1 MiB and up is fine', () => {
+  const f = memFindings(svc('    shm_size: 64'), 'shm-size-tiny');
+  assert.equal(f.length, 1);
+  assert.equal(f[0].level, 'warn');
+  assert.match(f[0].message, /64 bytes \(a bare number is BYTES\)/);
+  assert.match(f[0].hint, /`64m`/);
+  assert.equal(memFindings(svc('    shm_size: 1m'), 'shm-size-tiny').length, 0);
+  assert.equal(memFindings(svc('    shm_size: 256m'), 'shm-size-tiny').length, 0);
+  assert.equal(memFindings(svc('    shm_size: 512k'), 'shm-size-tiny').length, 1);
 });

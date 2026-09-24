@@ -122,6 +122,10 @@ window.DockerScope.parseCompose = function (yamlText, fileMap) {
       // `deploy.resources.reservations.memory`, falling back to the legacy
       // service-level `mem_reservation`. Same raw-string shape as the limit.
       memoryReservation: parseMemoryReservation(raw),
+      // Legacy `memswap_limit` (memory + swap) and `shm_size` (/dev/shm), in
+      // the same raw-string shape. -1 (unlimited swap) stays "-1".
+      memswapLimit: normalizeMemoryValue(raw.memswap_limit),
+      shmSize: normalizeMemoryValue(raw.shm_size),
       // `ulimits:` — per resource (nofile, nproc, core…) either a single
       // integer (sets soft AND hard) or a `{soft, hard}` mapping. Normalized
       // to [{name, soft, hard}] with plain numbers; -1 means unlimited and is
