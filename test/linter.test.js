@@ -697,7 +697,7 @@ test('the insecure sample trips every security rule at once', () => {
     'oom-kill-disable', 'ports-on-internal-network',
     'healthcheck-timeout-exceeds-interval',
     'start-interval-without-start-period', 'start-interval-exceeds-start-period', 'healthcheck-zero-is-default', 'log-rotation-keeps-one-file', 'restart-policy-conflict',
-    'replicas-with-fixed-port', 'memory-below-daemon-minimum', 'memswap-limit-invalid', 'shm-size-tiny',
+    'replicas-with-fixed-port', 'memory-below-daemon-minimum', 'memswap-limit-invalid', 'shm-size-tiny', 'tmpfs-size-tiny',
   ]) {
     assert.ok(rules.has(r), `expected rule '${r}'`);
   }
@@ -3051,4 +3051,26 @@ test('shm-size-tiny: a bare number is bytes and gives a one-page /dev/shm; 1 MiB
   assert.equal(memFindings(svc('    shm_size: 1m'), 'shm-size-tiny').length, 0);
   assert.equal(memFindings(svc('    shm_size: 256m'), 'shm-size-tiny').length, 0);
   assert.equal(memFindings(svc('    shm_size: 512k'), 'shm-size-tiny').length, 1);
+});
+
+test('tmpfs-size-tiny: a bare size is bytes in both spellings (measured: a one-page tmpfs)', () => {
+  const short = memFindings(svc('    tmpfs:', '      - /scratch:size=64'), 'tmpfs-size-tiny');
+  assert.equal(short.length, 1);
+  assert.equal(short[0].level, 'warn');
+  assert.match(short[0].message, /`tmpfs: \/scratch:size=64` is 64 bytes \(a bare number is BYTES\)/);
+  assert.match(short[0].hint, /`64m`/);
+  const long = memFindings(svc('    volumes:', '      - type: tmpfs', '        target: /scratch', '        tmpfs:', '          size: 64'), 'tmpfs-size-tiny');
+  assert.equal(long.length, 1);
+  assert.match(long[0].message, /tmpfs volume `\/scratch` with `size: 64`/);
+  const kilo = memFindings(svc('    tmpfs: /scratch:mode=1777,size=512k'), 'tmpfs-size-tiny');
+  assert.equal(kilo.length, 1);
+  assert.doesNotMatch(kilo[0].message, /bare number/);
+});
+
+test('tmpfs-size-tiny: 0 (no limit), percentages, no size, interpolations and 1 MiB up are fine', () => {
+  for (const opt of ['/s:size=0', '/s:size=10%', '/s', '/s:mode=1777', '/s:size=${TMP_SIZE}', '/s:size=1m', '/s:size=2097152']) {
+    assert.equal(memFindings(svc(`    tmpfs: "${opt}"`), 'tmpfs-size-tiny').length, 0, opt);
+  }
+  assert.equal(memFindings(svc('    volumes:', '      - type: tmpfs', '        target: /s', '        tmpfs:', '          size: 64m'), 'tmpfs-size-tiny').length, 0);
+  assert.equal(memFindings(svc('    volumes:', '      - type: tmpfs', '        target: /s'), 'tmpfs-size-tiny').length, 0);
 });

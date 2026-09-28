@@ -137,6 +137,8 @@ test('parseCompose normalizes tmpfs to target paths: string or list, options str
   assert.equal(JSON.stringify(byName.one.tmpfs), '["/run"]');
   assert.equal(JSON.stringify(byName.many.tmpfs), '["/run","/tmp/cache"]');
   assert.equal(JSON.stringify(byName.none.tmpfs), '[]');
+  assert.equal(JSON.stringify(byName.many.tmpfsSizes), '[{"target":"/tmp/cache","size":"64m","form":"tmpfs"}]');
+  assert.equal(JSON.stringify(byName.one.tmpfsSizes), '[]');
 });
 
 test('parseCompose rejects an empty or non-object document', () => {

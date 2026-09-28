@@ -49,6 +49,8 @@ services:
     command: sh -c "npm run worker"   # shell-pid1-no-init (warn) — sh never forwards SIGTERM; add init: true or exec form
     restart: unless-stopped
     read_only: true
+    tmpfs:
+      - /tmp:size=64                 # tmpfs-size-tiny (warn) — "64 MB" without the unit: a 4 KiB tmpfs, and the first bigger write fails (measured)
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
     mem_limit: 256m
