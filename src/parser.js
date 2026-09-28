@@ -9,6 +9,7 @@
 //     healthcheck: object|null,
 //     volumes: [{type, source, target, readonly}],  // type: "named" | "bind" | "anonymous"
 //     tmpfs: [string],               // service-level `tmpfs:` targets (options stripped)
+//     tmpfsSizes: [{target, size, form}],  // `size` of every tmpfs mount, raw string; form "tmpfs" (option) | "volume" (long form)
 //     devices: [{source, target, permissions}],  // `devices:` mappings; CDI names keep source, null target
 //     privileged: boolean,
 //     capAdd: [string],               // upper-cased Linux capabilities from cap_add
@@ -149,6 +150,11 @@ window.DockerScope.parseCompose = function (yamlText, fileMap) {
       // distinct from volumes long-form `type: tmpfs`. Only the target
       // paths are kept; mount options play no part in the rules.
       tmpfs: parseTmpfs(raw.tmpfs),
+      // The `size` of every tmpfs mount, from both spellings: the `size=`
+      // mount option of a service-level `tmpfs:` entry, and `tmpfs.size` of
+      // a long-form `type: tmpfs` volume. Raw strings; what tmpfs-size-tiny
+      // judges.
+      tmpfsSizes: parseTmpfsSizes(raw),
       // `devices:` — short strings "HOST[:CONTAINER[:permissions]]" (a bare
       // path maps to itself), or a CDI name ("vendor.com/class=name") that
       // names no host path at all. The linter only judges entries with a
@@ -588,6 +594,23 @@ function parseProfiles(value) {
   return value
     .filter((p) => typeof p === "string" || typeof p === "number")
     .map(String);
+}
+
+function parseTmpfsSizes(raw) {
+  const out = [];
+  const entries = typeof raw.tmpfs === "string" ? [raw.tmpfs] : Array.isArray(raw.tmpfs) ? raw.tmpfs : [];
+  for (const e of entries) {
+    if (typeof e !== "string") continue;
+    const [target, ...rest] = e.split(":");
+    const opt = rest.join(":").split(",").map((o) => o.trim()).find((o) => o.startsWith("size="));
+    if (opt) out.push({ target: target.trim(), size: opt.slice(5), form: "tmpfs" });
+  }
+  for (const v of Array.isArray(raw.volumes) ? raw.volumes : []) {
+    if (!v || typeof v !== "object" || v.type !== "tmpfs") continue;
+    const size = v.tmpfs && typeof v.tmpfs === "object" ? normalizeMemoryValue(v.tmpfs.size) : null;
+    if (size != null) out.push({ target: v.target != null ? String(v.target) : null, size, form: "volume" });
+  }
+  return out;
 }
 
 function parseTmpfs(value) {

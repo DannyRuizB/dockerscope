@@ -370,6 +370,35 @@ function ruleShmSizeTiny(svc) {
   }];
 }
 
+// The tmpfs edition of shm-size-tiny. A tmpfs `size` is bytes too, in both
+// spellings: the `size=` mount option of a service-level `tmpfs:` entry goes
+// straight to the kernel, and the long-form `tmpfs.size` goes to the daemon
+// as a byte count. Measured (compose v5.3.1 / daemon 29): `/scratch:size=64`
+// and `tmpfs: {size: 64}` both create and RUN with a tmpfs of one 4 KiB page
+// (`mount`: size=4k) — a 64 KiB write stops at 4096 bytes — and
+// `docker compose config` prints the value without a word. Not flagged:
+// `size=0` (the kernel's word for NO limit, measured: size=0k), a
+// percentage of RAM (`size=10%`, a real tmpfs option), interpolations, and
+// anything from 1 MiB up.
+function ruleTmpfsSizeTiny(svc) {
+  const out = [];
+  for (const t of svc.tmpfsSizes || []) {
+    const bytes = parseMemoryBytes(t.size);
+    if (bytes == null || bytes === 0 || bytes >= 1024 * 1024) continue;
+    const unitless = hasNoUnit(t.size);
+    const where = t.form === "tmpfs" ? `\`tmpfs: ${t.target}:size=${t.size}\`` : `tmpfs volume \`${t.target}\` with \`size: ${t.size}\``;
+    out.push({
+      level: "warn",
+      rule: "tmpfs-size-tiny",
+      message: `${where} is ${bytes} bytes${unitless ? " (a bare number is BYTES)" : ""} — the container starts fine with a tmpfs of a single 4 KiB page, and the first write past it fails with "no space left on device", far from this line.`,
+      hint: unitless
+        ? `Add the unit you meant (\`${t.size}m\` for megabytes), or drop the size to get the default (half the host's RAM).`
+        : "Raise it to what the path really needs, or drop the size to get the default (half the host's RAM).",
+    });
+  }
+  return out;
+}
+
 // `mem_reservation` is the SOFT floor (Docker keeps at least this much
 // available to the container under memory pressure); `mem_limit` is the HARD
 // ceiling. A floor above the ceiling is a contradiction, and the daemon says
@@ -1927,6 +1956,7 @@ const RULES = [
   ruleMemoryBelowDaemonMinimum,
   ruleMemswapLimitInvalid,
   ruleShmSizeTiny,
+  ruleTmpfsSizeTiny,
   ruleUlimitSoftExceedsHard,
   ruleZeroLimitIsUnlimited,
   ruleOomKillDisable,
