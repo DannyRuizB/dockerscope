@@ -51,6 +51,7 @@ services:
     read_only: true
     tmpfs:
       - /tmp:size=64                 # tmpfs-size-tiny (warn) — "64 MB" without the unit: a 4 KiB tmpfs, and the first bigger write fails (measured)
+      - /run/cache:size=8m,mode=777  # tmpfs-mode-no-sticky (warn) — world-writable without the sticky bit: any user deletes anyone's files (measured)
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
     mem_limit: 256m
@@ -112,6 +113,11 @@ services:
     mem_limit: 512                   # memory-below-daemon-minimum (error) — "512 MB" written without the unit is 512 BYTES; the daemon's floor is 6 MiB
     ports:
       - "127.0.0.1:3000:3000"        # ports-on-internal-network (warn) — the only network is internal, the mapping is dead
+    volumes:
+      - type: tmpfs
+        target: /tmp
+        tmpfs:
+          mode: 777                  # tmpfs-mode-decimal (warn) — a YAML number is DECIMAL: the dir comes up 1411 and grafana (uid 472) cannot write to it (measured)
     pid: "service:app"               # shared-namespace (warn) — sees app's processes and reads its /proc/<pid>/environ
     ipc: "shareable"                 # shared-namespace (warn) — invites any container into its IPC namespace
     networks:

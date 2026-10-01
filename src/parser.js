@@ -10,6 +10,7 @@
 //     volumes: [{type, source, target, readonly}],  // type: "named" | "bind" | "anonymous"
 //     tmpfs: [string],               // service-level `tmpfs:` targets (options stripped)
 //     tmpfsSizes: [{target, size, form}],  // `size` of every tmpfs mount, raw string; form "tmpfs" (option) | "volume" (long form)
+//     tmpfsModes: [{target, mode, raw, form}],  // `mode` of every tmpfs mount: effective permission bits (number) + as written
 //     devices: [{source, target, permissions}],  // `devices:` mappings; CDI names keep source, null target
 //     privileged: boolean,
 //     capAdd: [string],               // upper-cased Linux capabilities from cap_add
@@ -184,6 +185,10 @@ window.DockerScope.parseCompose = function (yamlText, fileMap) {
       // a long-form `type: tmpfs` volume. Raw strings; what tmpfs-size-tiny
       // judges.
       tmpfsSizes: parseTmpfsSizes(raw),
+      // The `mode` of every tmpfs mount, as the permission bits the daemon
+      // applies: the `mode=` option is octal text, the long-form
+      // `tmpfs.mode` a number (decimal unless written with a leading zero).
+      tmpfsModes: parseTmpfsModes(raw),
       // `devices:` — short strings "HOST[:CONTAINER[:permissions]]" (a bare
       // path maps to itself), or a CDI name ("vendor.com/class=name") that
       // names no host path at all. The linter only judges entries with a
@@ -638,6 +643,25 @@ function parseTmpfsSizes(raw) {
     if (!v || typeof v !== "object" || v.type !== "tmpfs") continue;
     const size = v.tmpfs && typeof v.tmpfs === "object" ? normalizeMemoryValue(v.tmpfs.size) : null;
     if (size != null) out.push({ target: v.target != null ? String(v.target) : null, size, form: "volume" });
+  }
+  return out;
+}
+
+function parseTmpfsModes(raw) {
+  const out = [];
+  const entries = typeof raw.tmpfs === "string" ? [raw.tmpfs] : Array.isArray(raw.tmpfs) ? raw.tmpfs : [];
+  for (const e of entries) {
+    if (typeof e !== "string") continue;
+    const [target, ...rest] = e.split(":");
+    const opt = rest.join(":").split(",").map((o) => o.trim()).find((o) => o.startsWith("mode="));
+    if (!opt || !/^[0-7]{1,4}$/.test(opt.slice(5))) continue;
+    out.push({ target: target.trim(), mode: parseInt(opt.slice(5), 8), raw: opt.slice(5), form: "tmpfs" });
+  }
+  for (const v of Array.isArray(raw.volumes) ? raw.volumes : []) {
+    if (!v || typeof v !== "object" || v.type !== "tmpfs") continue;
+    const m = v.tmpfs && typeof v.tmpfs === "object" ? v.tmpfs.mode : null;
+    if (!Number.isInteger(m) || m < 0) continue;
+    out.push({ target: v.target != null ? String(v.target) : null, mode: m, raw: String(m), form: "volume" });
   }
   return out;
 }

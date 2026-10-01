@@ -698,6 +698,7 @@ test('the insecure sample trips every security rule at once', () => {
     'healthcheck-timeout-exceeds-interval',
     'start-interval-without-start-period', 'start-interval-exceeds-start-period', 'healthcheck-zero-is-default', 'log-rotation-keeps-one-file', 'restart-policy-conflict',
     'replicas-with-fixed-port', 'memory-below-daemon-minimum', 'memswap-limit-invalid', 'shm-size-tiny', 'tmpfs-size-tiny',
+    'tmpfs-mode-decimal', 'tmpfs-mode-no-sticky',
   ]) {
     assert.ok(rules.has(r), `expected rule '${r}'`);
   }
@@ -3073,4 +3074,45 @@ test('tmpfs-size-tiny: 0 (no limit), percentages, no size, interpolations and 1 
   }
   assert.equal(memFindings(svc('    volumes:', '      - type: tmpfs', '        target: /s', '        tmpfs:', '          size: 64m'), 'tmpfs-size-tiny').length, 0);
   assert.equal(memFindings(svc('    volumes:', '      - type: tmpfs', '        target: /s'), 'tmpfs-size-tiny').length, 0);
+});
+
+test('tmpfs-mode-decimal: a long-form mode without a leading 0 is decimal (measured: 777 -> 1411, 1777 -> 3361)', () => {
+  const f = memFindings(svc('    volumes:', '      - type: tmpfs', '        target: /scratch', '        tmpfs:', '          mode: 777'), 'tmpfs-mode-decimal');
+  assert.equal(f.length, 1);
+  assert.equal(f[0].level, 'warn');
+  assert.match(f[0].message, /`mode: 777`.*mode 1411 \(r----x--x \+ sticky\)/);
+  assert.match(f[0].hint, /`mode: 0777`/);
+  assert.match(memFindings(svc('    volumes:', '      - type: tmpfs', '        target: /scratch', '        tmpfs:', '          mode: 1777'), 'tmpfs-mode-decimal')[0].message, /mode 3361 \(-wxrw---x \+ setgid \+ sticky\)/);
+  assert.equal(memFindings(svc('    volumes:', '      - type: tmpfs', '        target: /scratch', '        tmpfs:', '          mode: 755'), 'tmpfs-mode-decimal').length, 1);
+  // It is not ALSO reported as a missing sticky bit.
+  assert.equal(memFindings(svc('    volumes:', '      - type: tmpfs', '        target: /scratch', '        tmpfs:', '          mode: 777'), 'tmpfs-mode-no-sticky').length, 0);
+});
+
+test('tmpfs-mode-decimal: leading-zero octal, deliberate decimals and the short form are fine', () => {
+  for (const m of ['0777', '01777', '0o1777', '511', '1023']) {
+    assert.equal(memFindings(svc('    volumes:', '      - type: tmpfs', '        target: /scratch', '        tmpfs:', `          mode: ${m}`), 'tmpfs-mode-decimal').length, 0, m);
+  }
+  // The short form is octal text: mode=777 is 0o777 (no sticky, a different rule).
+  assert.equal(memFindings(svc('    tmpfs: /scratch:mode=777'), 'tmpfs-mode-decimal').length, 0);
+});
+
+test('tmpfs-mode-no-sticky: world-writable without the sticky bit, in both spellings (measured: a second user deletes the file)', () => {
+  const short = memFindings(svc('    tmpfs:', '      - /tmp:size=1m,mode=777'), 'tmpfs-mode-no-sticky');
+  assert.equal(short.length, 1);
+  assert.equal(short[0].level, 'warn');
+  assert.match(short[0].message, /`tmpfs: \/tmp:mode=777` is writable by everyone without the sticky bit/);
+  assert.match(short[0].hint, /`mode=1777`/);
+  const long = memFindings(svc('    volumes:', '      - type: tmpfs', '        target: /scratch', '        tmpfs:', '          mode: 0777'), 'tmpfs-mode-no-sticky');
+  assert.equal(long.length, 1);
+  assert.match(long[0].message, /tmpfs volume `\/scratch` with mode 777/);
+  assert.match(long[0].hint, /`mode: 01777`/);
+  assert.match(memFindings(svc('    tmpfs: /tmp:mode=0757'), 'tmpfs-mode-no-sticky')[0].hint, /`mode=1757`/);
+});
+
+test('tmpfs-mode-no-sticky: sticky, not world-writable, the default and interpolations are fine', () => {
+  for (const opt of ['/t:mode=1777', '/t:mode=755', '/t:mode=0770', '/t', '/t:mode=${TMP_MODE}']) {
+    assert.equal(memFindings(svc(`    tmpfs: "${opt}"`), 'tmpfs-mode-no-sticky').length, 0, opt);
+  }
+  assert.equal(memFindings(svc('    volumes:', '      - type: tmpfs', '        target: /scratch', '        tmpfs:', '          mode: 01777'), 'tmpfs-mode-no-sticky').length, 0);
+  assert.equal(memFindings(svc('    volumes:', '      - type: tmpfs', '        target: /t'), 'tmpfs-mode-no-sticky').length, 0);
 });
