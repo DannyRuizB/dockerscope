@@ -29,6 +29,35 @@
 
 window.DockerScope = window.DockerScope || {};
 
+// Compose reads YAML with go-yaml v3, and js-yaml 5's default schema is not
+// that. Two differences change what a compose file MEANS, so the schema is
+// built to match (measured with compose v5.3.1):
+//   - merge keys: `<<: *common` (and `<<: [*a, *b]`) pull an anchor into the
+//     mapping, local keys winning. js-yaml 5 left `!!merge` out of its default
+//     schema, so since the 4 -> 5 bump everything a service inherited that way
+//     (privileged, ports, restart...) silently vanished from the model.
+//   - legacy octal: `0777` is 511, as Compose sees it (`0o777` too), and
+//     `1_000` is 1000. js-yaml's core schema reads `0777` as decimal 777.
+// Booleans stay core: `yes`/`on` are strings to Compose as well.
+let composeSchema = null;
+function composeYamlSchema() {
+  if (composeSchema) return composeSchema;
+  const legacyInt = /^[-+]?(0[0-7_]+|[0-9][0-9]*_[0-9_]*)$/;
+  const intTag = jsyaml.defineScalarTag("tag:yaml.org,2002:int", {
+    implicit: true,
+    implicitFirstChars: jsyaml.intCoreTag.implicitFirstChars,
+    resolve: (source, isExplicit, tagName) => (legacyInt.test(source) ? jsyaml.intYaml11Tag : jsyaml.intCoreTag).resolve(source, isExplicit, tagName),
+    identify: jsyaml.intCoreTag.identify,
+    represent: jsyaml.intCoreTag.represent,
+  });
+  composeSchema = jsyaml.CORE_SCHEMA.withTags(jsyaml.mergeTag, intTag);
+  return composeSchema;
+}
+
+function loadComposeYaml(text) {
+  return jsyaml.load(text, { schema: composeYamlSchema() });
+}
+
 // fileMap is an optional Map<basenameOfYamlFile, yamlString> used to resolve
 // `extends.file` and `include:` references. If omitted or empty, those
 // references emit warnings and resolution is skipped.
@@ -37,7 +66,7 @@ window.DockerScope.parseCompose = function (yamlText, fileMap) {
   fileMap = fileMap || new Map();
   let doc;
   try {
-    doc = jsyaml.load(yamlText);
+    doc = loadComposeYaml(yamlText);
   } catch (err) {
     throw new Error("YAML parse error: " + err.message, { cause: err });
   }
@@ -689,7 +718,7 @@ function resolveServiceExtends(svc, name, sameDocServices, fileMap, warnings, de
       }
       let baseDoc;
       try {
-        baseDoc = jsyaml.load(fileContent);
+        baseDoc = loadComposeYaml(fileContent);
       } catch (err) {
         warnings.push(`Service "${name}": failed to parse extends file "${targetFile}": ${err.message}`);
         return stripExtends(svc);
@@ -867,7 +896,7 @@ function resolveIncludes(doc, fileMap, warnings, depth) {
     }
     let includedDoc;
     try {
-      includedDoc = jsyaml.load(fileContent);
+      includedDoc = loadComposeYaml(fileContent);
     } catch (err) {
       warnings.push(`include: failed to parse "${path}": ${err.message}`);
       continue;
