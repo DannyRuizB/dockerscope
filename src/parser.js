@@ -10,6 +10,7 @@
 //     volumes: [{type, source, target, readonly}],  // type: "named" | "bind" | "anonymous"
 //     tmpfs: [string],               // service-level `tmpfs:` targets (options stripped)
 //     tmpfsSizes: [{target, size, form}],  // `size` of every tmpfs mount, raw string; form "tmpfs" (option) | "volume" (long form)
+//     tmpfsModes: [{target, mode, raw, form}],  // `mode` of every tmpfs mount: effective permission bits (number) + as written
 //     devices: [{source, target, permissions}],  // `devices:` mappings; CDI names keep source, null target
 //     privileged: boolean,
 //     capAdd: [string],               // upper-cased Linux capabilities from cap_add
@@ -29,6 +30,35 @@
 
 window.DockerScope = window.DockerScope || {};
 
+// Compose reads YAML with go-yaml v3, and js-yaml 5's default schema is not
+// that. Two differences change what a compose file MEANS, so the schema is
+// built to match (measured with compose v5.3.1):
+//   - merge keys: `<<: *common` (and `<<: [*a, *b]`) pull an anchor into the
+//     mapping, local keys winning. js-yaml 5 left `!!merge` out of its default
+//     schema, so since the 4 -> 5 bump everything a service inherited that way
+//     (privileged, ports, restart...) silently vanished from the model.
+//   - legacy octal: `0777` is 511, as Compose sees it (`0o777` too), and
+//     `1_000` is 1000. js-yaml's core schema reads `0777` as decimal 777.
+// Booleans stay core: `yes`/`on` are strings to Compose as well.
+let composeSchema = null;
+function composeYamlSchema() {
+  if (composeSchema) return composeSchema;
+  const legacyInt = /^[-+]?(0[0-7_]+|[0-9][0-9]*_[0-9_]*)$/;
+  const intTag = jsyaml.defineScalarTag("tag:yaml.org,2002:int", {
+    implicit: true,
+    implicitFirstChars: jsyaml.intCoreTag.implicitFirstChars,
+    resolve: (source, isExplicit, tagName) => (legacyInt.test(source) ? jsyaml.intYaml11Tag : jsyaml.intCoreTag).resolve(source, isExplicit, tagName),
+    identify: jsyaml.intCoreTag.identify,
+    represent: jsyaml.intCoreTag.represent,
+  });
+  composeSchema = jsyaml.CORE_SCHEMA.withTags(jsyaml.mergeTag, intTag);
+  return composeSchema;
+}
+
+function loadComposeYaml(text) {
+  return jsyaml.load(text, { schema: composeYamlSchema() });
+}
+
 // fileMap is an optional Map<basenameOfYamlFile, yamlString> used to resolve
 // `extends.file` and `include:` references. If omitted or empty, those
 // references emit warnings and resolution is skipped.
@@ -37,7 +67,7 @@ window.DockerScope.parseCompose = function (yamlText, fileMap) {
   fileMap = fileMap || new Map();
   let doc;
   try {
-    doc = jsyaml.load(yamlText);
+    doc = loadComposeYaml(yamlText);
   } catch (err) {
     throw new Error("YAML parse error: " + err.message, { cause: err });
   }
@@ -155,6 +185,10 @@ window.DockerScope.parseCompose = function (yamlText, fileMap) {
       // a long-form `type: tmpfs` volume. Raw strings; what tmpfs-size-tiny
       // judges.
       tmpfsSizes: parseTmpfsSizes(raw),
+      // The `mode` of every tmpfs mount, as the permission bits the daemon
+      // applies: the `mode=` option is octal text, the long-form
+      // `tmpfs.mode` a number (decimal unless written with a leading zero).
+      tmpfsModes: parseTmpfsModes(raw),
       // `devices:` — short strings "HOST[:CONTAINER[:permissions]]" (a bare
       // path maps to itself), or a CDI name ("vendor.com/class=name") that
       // names no host path at all. The linter only judges entries with a
@@ -613,6 +647,25 @@ function parseTmpfsSizes(raw) {
   return out;
 }
 
+function parseTmpfsModes(raw) {
+  const out = [];
+  const entries = typeof raw.tmpfs === "string" ? [raw.tmpfs] : Array.isArray(raw.tmpfs) ? raw.tmpfs : [];
+  for (const e of entries) {
+    if (typeof e !== "string") continue;
+    const [target, ...rest] = e.split(":");
+    const opt = rest.join(":").split(",").map((o) => o.trim()).find((o) => o.startsWith("mode="));
+    if (!opt || !/^[0-7]{1,4}$/.test(opt.slice(5))) continue;
+    out.push({ target: target.trim(), mode: parseInt(opt.slice(5), 8), raw: opt.slice(5), form: "tmpfs" });
+  }
+  for (const v of Array.isArray(raw.volumes) ? raw.volumes : []) {
+    if (!v || typeof v !== "object" || v.type !== "tmpfs") continue;
+    const m = v.tmpfs && typeof v.tmpfs === "object" ? v.tmpfs.mode : null;
+    if (!Number.isInteger(m) || m < 0) continue;
+    out.push({ target: v.target != null ? String(v.target) : null, mode: m, raw: String(m), form: "volume" });
+  }
+  return out;
+}
+
 function parseTmpfs(value) {
   const entries = typeof value === "string" ? [value] : Array.isArray(value) ? value : [];
   const out = [];
@@ -689,7 +742,7 @@ function resolveServiceExtends(svc, name, sameDocServices, fileMap, warnings, de
       }
       let baseDoc;
       try {
-        baseDoc = jsyaml.load(fileContent);
+        baseDoc = loadComposeYaml(fileContent);
       } catch (err) {
         warnings.push(`Service "${name}": failed to parse extends file "${targetFile}": ${err.message}`);
         return stripExtends(svc);
@@ -867,7 +920,7 @@ function resolveIncludes(doc, fileMap, warnings, depth) {
     }
     let includedDoc;
     try {
-      includedDoc = jsyaml.load(fileContent);
+      includedDoc = loadComposeYaml(fileContent);
     } catch (err) {
       warnings.push(`include: failed to parse "${path}": ${err.message}`);
       continue;

@@ -399,6 +399,65 @@ function ruleTmpfsSizeTiny(svc) {
   return out;
 }
 
+// A long-form `tmpfs.mode` is a NUMBER, and Compose reads it the YAML way:
+// decimal unless it starts with 0. `mode: 777` is therefore 777 decimal =
+// 0o1411 - measured (compose v5.3.1 / daemon 29): the directory comes up
+// `1411` (owner r--, group and others --x) and a non-root service gets
+// "Permission denied" writing to its own tmpfs; root still writes, so it
+// hides until the service drops privileges. `mode: 0777` is 511 = 0o777 and
+// `mode: 01777` is what was meant. Flagged only when the digits read as a
+// classic permission triple (each of the last three is 0, 4, 5, 6 or 7):
+// someone writing 511 or 1023 is doing the conversion on purpose.
+function ruleTmpfsModeDecimal(svc) {
+  const out = [];
+  for (const t of svc.tmpfsModes || []) {
+    if (t.form !== "volume" || !looksLikeOctalTyped(t.mode)) continue;
+    out.push({
+      level: "warn",
+      rule: "tmpfs-mode-decimal",
+      message: `tmpfs volume \`${t.target}\` has \`mode: ${t.mode}\` — a YAML number without a leading 0 is DECIMAL, so the directory gets mode ${t.mode.toString(8)} (${describeMode(t.mode)}), not ${t.mode}. A non-root service cannot write to it ("Permission denied"); root can, which hides it until the service drops privileges.`,
+      hint: `Write it with a leading zero (\`mode: 0${t.mode}\`), or drop \`mode\` to get Docker's default 1777.`,
+    });
+  }
+  return out;
+}
+
+function looksLikeOctalTyped(n) {
+  const digits = String(n);
+  return /^[0-7]?[04567]{3}$/.test(digits) && parseInt(digits, 8) !== n;
+}
+
+function describeMode(mode) {
+  const bits = (b) => (b & 4 ? "r" : "-") + (b & 2 ? "w" : "-") + (b & 1 ? "x" : "-");
+  const extra = [mode & 0o4000 && "setuid", mode & 0o2000 && "setgid", mode & 0o1000 && "sticky"].filter(Boolean);
+  return `${bits(mode >> 6)}${bits(mode >> 3)}${bits(mode)}${extra.length ? " + " + extra.join(" + ") : ""}`;
+}
+
+// A world-writable tmpfs without the sticky bit: every user in the
+// container may delete or rename every other user's files in it - the
+// reason /tmp is 1777, and the door to the classic /tmp symlink races.
+// Docker's own default for a tmpfs mount IS 1777 (measured, both
+// spellings); it takes an explicit `mode=777` (or `mode: 0777`) to lose
+// the bit. Measured: in a `mode=777` tmpfs a second user removes a file
+// owned by nobody; with 1777 the same `rm` is "Operation not permitted".
+function ruleTmpfsModeNoSticky(svc) {
+  const out = [];
+  for (const t of svc.tmpfsModes || []) {
+    if (t.form === "volume" && looksLikeOctalTyped(t.mode)) continue; // tmpfs-mode-decimal has it
+    if (!(t.mode & 0o002) || t.mode & 0o1000) continue;
+    const where = t.form === "tmpfs" ? `\`tmpfs: ${t.target}:mode=${t.raw}\`` : `tmpfs volume \`${t.target}\` with mode ${t.mode.toString(8)}`;
+    out.push({
+      level: "warn",
+      rule: "tmpfs-mode-no-sticky",
+      message: `${where} is writable by everyone without the sticky bit — any user in the container can delete or rename the files of any other (measured), the opening for /tmp symlink races. Docker's default for a tmpfs is 1777.`,
+      hint: t.form === "tmpfs"
+        ? `Use \`mode=1${(t.mode & 0o777).toString(8).padStart(3, "0")}\` (the sticky bit is the leading 1), or drop \`mode\` for the default 1777.`
+        : `Use \`mode: 01${(t.mode & 0o777).toString(8).padStart(3, "0")}\` (leading zero: octal), or drop \`mode\` for the default 1777.`,
+    });
+  }
+  return out;
+}
+
 // `mem_reservation` is the SOFT floor (Docker keeps at least this much
 // available to the container under memory pressure); `mem_limit` is the HARD
 // ceiling. A floor above the ceiling is a contradiction, and the daemon says
@@ -1957,6 +2016,8 @@ const RULES = [
   ruleMemswapLimitInvalid,
   ruleShmSizeTiny,
   ruleTmpfsSizeTiny,
+  ruleTmpfsModeDecimal,
+  ruleTmpfsModeNoSticky,
   ruleUlimitSoftExceedsHard,
   ruleZeroLimitIsUnlimited,
   ruleOomKillDisable,

@@ -241,3 +241,44 @@ test('parseCompose normalizes ulimits: single number sets both, mapping keeps so
   ]);
   assert.deepEqual(JSON.parse(JSON.stringify(model.services.find((s) => s.name === 'bare').ulimits)), []);
 });
+
+// Measured with compose v5.3.1: `<<` merges an anchor (a list merges several),
+// local keys win, and a leading-zero integer is octal. js-yaml 5's default
+// schema did neither, so a service that inherited `privileged: true` through
+// an anchor linted clean.
+test('parseCompose reads YAML like Compose: merge keys and legacy octal ints', () => {
+  const yaml = [
+    'x-base: &base',
+    '  privileged: true',
+    '  ulimits: {nofile: 010}',
+    '  ports: ["8080:80"]',
+    'x-restart: &restart',
+    '  restart: always',
+    'services:',
+    '  one:',
+    '    <<: *base',
+    '    image: nginx:1.27',
+    '  many:',
+    '    <<: [*base, *restart]',
+    '    image: nginx:1.27',
+    '    restart: "no"',
+  ].join('\n');
+  const model = DS.parseCompose(yaml);
+  const one = model.services.find((s) => s.name === 'one');
+  assert.equal(one.privileged, true);
+  assert.ok(one.ports.some((p) => p.published === 8080 && p.target === 80));
+  assert.deepEqual(JSON.parse(JSON.stringify(one.ulimits)), [{ name: 'nofile', soft: 8, hard: 8 }]);
+  const many = model.services.find((s) => s.name === 'many');
+  assert.equal(many.privileged, true);
+  assert.equal(many.restart, 'no'); // the local key beats the merged anchor
+  assert.ok(DS.lint(model).findings.some((f) => f.service === 'one' && f.rule === 'privileged'));
+});
+
+// The page pulls js-yaml from the CDN; the tests run the npm copy. Dependabot
+// bumps only package.json, and the two had drifted twice (v0.45, then 5.4.1
+// vs 5.4.2) - so a js-yaml bump now goes red until index.html follows it.
+test('index.html loads the same js-yaml version the tests run', () => {
+  const html = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'index.html'), 'utf8');
+  const cdn = (html.match(/js-yaml@([0-9][0-9.]*)\//) || [])[1];
+  assert.equal(cdn, require('js-yaml/package.json').version, 'bump the js-yaml <script> in index.html to the package.json version');
+});
