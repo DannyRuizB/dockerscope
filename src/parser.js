@@ -11,6 +11,7 @@
 //     tmpfs: [string],               // service-level `tmpfs:` targets (options stripped)
 //     tmpfsSizes: [{target, size, form}],  // `size` of every tmpfs mount, raw string; form "tmpfs" (option) | "volume" (long form)
 //     tmpfsModes: [{target, mode, raw, form}],  // `mode` of every tmpfs mount: effective permission bits (number) + as written
+//     fileModes: [{kind, source, target, mode, uid}],  // long-form secrets/configs whose `mode` is a YAML number; kind "secret" | "config"
 //     devices: [{source, target, permissions}],  // `devices:` mappings; CDI names keep source, null target
 //     privileged: boolean,
 //     capAdd: [string],               // upper-cased Linux capabilities from cap_add
@@ -249,6 +250,7 @@ window.DockerScope.parseCompose = function (yamlText, fileMap) {
       // `secrets:` / `configs:` blocks by the undeclared-* rules.
       secrets: parseNamedRefs(raw.secrets),
       configs: parseNamedRefs(raw.configs),
+      fileModes: [...parseFileModes(raw.secrets, "secret"), ...parseFileModes(raw.configs, "config")],
       dockerfile,
       stack: resolveStack(name, dockerfile, fileMap, warnings),
     });
@@ -313,6 +315,27 @@ function parseNamedRefs(value) {
     else if (entry && typeof entry === "object" && typeof entry.source === "string") {
       out.push(entry.source);
     }
+  }
+  return out;
+}
+
+// The `mode` of a long-form secret / config, kept only when it is a YAML
+// NUMBER: a quoted "440" is read as octal text by Compose (measured: it
+// comes back "0440"), a bare 440 is a decimal integer. `uid` is kept to say
+// who the owner is (unset: root).
+function parseFileModes(value, kind) {
+  if (!Array.isArray(value)) return [];
+  const out = [];
+  for (const entry of value) {
+    if (!entry || typeof entry !== "object" || typeof entry.source !== "string") continue;
+    if (typeof entry.mode !== "number" || !Number.isInteger(entry.mode)) continue;
+    out.push({
+      kind,
+      source: entry.source,
+      target: typeof entry.target === "string" ? entry.target : null,
+      mode: entry.mode,
+      uid: entry.uid == null ? null : String(entry.uid),
+    });
   }
   return out;
 }
