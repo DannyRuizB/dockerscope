@@ -698,7 +698,7 @@ test('the insecure sample trips every security rule at once', () => {
     'healthcheck-timeout-exceeds-interval',
     'start-interval-without-start-period', 'start-interval-exceeds-start-period', 'healthcheck-zero-is-default', 'log-rotation-keeps-one-file', 'restart-policy-conflict',
     'replicas-with-fixed-port', 'memory-below-daemon-minimum', 'memswap-limit-invalid', 'shm-size-tiny', 'tmpfs-size-tiny',
-    'tmpfs-mode-decimal', 'tmpfs-mode-no-sticky', 'secret-config-mode-decimal',
+    'tmpfs-mode-decimal', 'tmpfs-mode-no-sticky', 'secret-config-mode-decimal', 'merge-key-replaces-list',
   ]) {
     assert.ok(rules.has(r), `expected rule '${r}'`);
   }
@@ -3167,4 +3167,58 @@ test('secret-config-mode-decimal: leading zero, 0o, quoted, deliberate decimals 
   assert.equal(memFindings(cfg('      - source: app_conf', '        target: /c'), 'secret-config-mode-decimal').length, 0, 'no mode');
   // Anchor: the same harness DOES flag the bad spelling, so the loop above cannot pass by emptiness.
   assert.equal(memFindings(cfg('      - source: app_conf', '        target: /c', '        mode: 644'), 'secret-config-mode-decimal').length, 1);
+});
+
+// --- merge-key-replaces-list ---------------------------------------------------
+// Measured with compose v5.3.1: YAML merge keys are shallow - a list/map the
+// service writes replaces the anchor's (environment, labels, cap_drop [ALL]).
+
+const ANCHOR = [
+  'x-common: &common',
+  '  image: alpine:3',
+  '  environment: [TZ=UTC, LOG_LEVEL=info]',
+  '  cap_drop: [ALL]',
+  '  labels: {team: core}',
+  'services:',
+  '  svc:',
+  '    <<: *common',
+];
+const mk = (...lines) => [...ANCHOR, ...lines].join('\n');
+
+test('merge-key-replaces-list: a local list replaces the anchor list, and the lost entries are named', () => {
+  const f = memFindings(mk('    environment: [APP=1]'), 'merge-key-replaces-list');
+  assert.equal(f.length, 1);
+  assert.equal(f[0].level, 'warn');
+  assert.match(f[0].message, /`environment` here REPLACES.*`TZ=UTC`, `LOG_LEVEL=info` from the anchor are gone/);
+  assert.match(f[0].hint, /extends/);
+  const map = memFindings(mk('    environment: {APP: "1"}'), 'merge-key-replaces-list');
+  assert.equal(map.length, 1, 'the mapping spelling is compared by key too');
+  assert.match(memFindings(mk('    labels: {app: api}'), 'merge-key-replaces-list')[0].message, /`team=core`/);
+});
+
+test('merge-key-replaces-list: a security key says the lost entries are protections', () => {
+  const f = memFindings(mk('    cap_drop: [NET_RAW]'), 'merge-key-replaces-list');
+  assert.equal(f.length, 1);
+  assert.match(f[0].message, /`ALL` from the anchor is gone/);
+  assert.match(f[0].message, /These are protections/);
+});
+
+test('merge-key-replaces-list: inheriting, re-stating everything, scalars and extends are fine', () => {
+  assert.equal(memFindings(mk(), 'merge-key-replaces-list').length, 0, 'nothing overridden');
+  assert.equal(memFindings(mk('    environment: [TZ=UTC, LOG_LEVEL=debug, APP=1]'), 'merge-key-replaces-list').length, 0, 'superset by key');
+  assert.equal(memFindings(mk('    image: alpine:3.20'), 'merge-key-replaces-list').length, 0, 'a scalar override is expected');
+  const ext = ['services:', '  base:', '    image: alpine:3', '    environment: [TZ=UTC]',
+    '  svc:', '    extends: {service: base}', '    environment: [APP=1]'].join('\n');
+  assert.equal(memFindings(ext, 'merge-key-replaces-list').length, 0, 'extends concatenates');
+  // Anchor: the same harness flags the override.
+  assert.equal(memFindings(mk('    environment: [TZ=UTC]'), 'merge-key-replaces-list').length, 1);
+});
+
+test('merge-key-replaces-list: in a list of anchors the earlier one wins a key', () => {
+  const t = ['x-a: &a', '  environment: [A=1]', 'x-b: &b', '  environment: [B=1]', 'services:', '  svc:',
+    '    image: alpine:3', '    <<: [*a, *b]', '    environment: [C=1]'].join('\n');
+  const f = memFindings(t, 'merge-key-replaces-list');
+  assert.equal(f.length, 1);
+  assert.match(f[0].message, /`A=1`/);
+  assert.doesNotMatch(f[0].message, /B=1/);
 });

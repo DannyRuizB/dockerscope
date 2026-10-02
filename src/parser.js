@@ -11,6 +11,7 @@
 //     tmpfs: [string],               // service-level `tmpfs:` targets (options stripped)
 //     tmpfsSizes: [{target, size, form}],  // `size` of every tmpfs mount, raw string; form "tmpfs" (option) | "volume" (long form)
 //     tmpfsModes: [{target, mode, raw, form}],  // `mode` of every tmpfs mount: effective permission bits (number) + as written
+//     mergeOverrides: [{key, lost}],  // list/map keys a `<<: *anchor` brought in that the service replaced; lost = what it dropped
 //     fileModes: [{kind, source, target, mode, uid}],  // long-form secrets/configs whose `mode` is a YAML number; kind "secret" | "config"
 //     devices: [{source, target, permissions}],  // `devices:` mappings; CDI names keep source, null target
 //     privileged: boolean,
@@ -90,6 +91,17 @@ window.DockerScope.parseCompose = function (yamlText, fileMap) {
     }
     doc.services = flat;
   }
+
+  // The same text read WITHOUT merge keys: `<<` stays a plain key holding the
+  // anchor (or a list of them), so we can tell what a service inherited from
+  // what it wrote itself. Only for the main file's own services.
+  let unmerged;
+  try {
+    unmerged = jsyaml.load(yamlText, { schema: jsyaml.CORE_SCHEMA });
+  } catch {
+    unmerged = null;
+  }
+  const unmergedServices = unmerged && unmerged.services && typeof unmerged.services === "object" ? unmerged.services : {};
 
   const services = [];
   const rawServices = doc.services || {};
@@ -251,6 +263,7 @@ window.DockerScope.parseCompose = function (yamlText, fileMap) {
       secrets: parseNamedRefs(raw.secrets),
       configs: parseNamedRefs(raw.configs),
       fileModes: [...parseFileModes(raw.secrets, "secret"), ...parseFileModes(raw.configs, "config")],
+      mergeOverrides: parseMergeOverrides(unmergedServices[name]),
       dockerfile,
       stack: resolveStack(name, dockerfile, fileMap, warnings),
     });
@@ -338,6 +351,51 @@ function parseFileModes(value, kind) {
     });
   }
   return out;
+}
+
+// YAML merge keys are SHALLOW: a key the service writes itself replaces the
+// anchor's whole value, list or mapping alike. Measured with compose v5.3.1:
+// an anchor with `environment: [TZ=UTC, LOG_LEVEL=info]` and a service adding
+// `environment: [APP=1]` ends up with APP only (also in the mapping form);
+// `labels` loses the anchor's labels; and `cap_drop: [NET_RAW]` replaces the
+// anchor's `cap_drop: [ALL]`. `extends` is the one that merges (APP + TZ).
+// For each such key, what the anchor had and the service no longer has.
+function parseMergeOverrides(svc) {
+  if (!svc || typeof svc !== "object" || !("<<" in svc)) return [];
+  const sources = Array.isArray(svc["<<"]) ? svc["<<"] : [svc["<<"]];
+  const inherited = {};
+  // In a list of anchors the EARLIER one wins a key (YAML merge rule).
+  for (const src of sources) {
+    if (!src || typeof src !== "object" || Array.isArray(src)) continue;
+    for (const [k, v] of Object.entries(src)) if (!(k in inherited)) inherited[k] = v;
+  }
+  const out = [];
+  for (const [key, local] of Object.entries(svc)) {
+    if (key === "<<" || !(key in inherited)) continue;
+    const base = inherited[key];
+    if (!base || typeof base !== "object" || !local || typeof local !== "object") continue;
+    const lost = mergeLost(base, local);
+    if (lost.length) out.push({ key, lost });
+  }
+  return out;
+}
+
+// Entries of `base` the replacing value `local` does not carry. A list of
+// KEY=value strings and a KEY: value mapping are compared by key (the two
+// spellings of environment/labels mean the same thing).
+function mergeLost(base, local) {
+  const keyed = (v) => {
+    if (!Array.isArray(v)) return new Map(Object.entries(v).map(([k, x]) => [k, `${k}=${x}`]));
+    const m = new Map();
+    for (const item of v) {
+      const str = typeof item === "string" ? item : JSON.stringify(item);
+      m.set(typeof item === "string" && item.includes("=") ? item.split("=")[0] : str, str);
+    }
+    return m;
+  };
+  const b = keyed(base);
+  const l = keyed(local);
+  return [...b].filter(([k]) => !l.has(k)).map(([, shown]) => shown);
 }
 
 function parseReplicas(raw) {

@@ -1,6 +1,18 @@
 # A compose file that trips the security rules on purpose — useful for seeing
 # what the linter flags. Do NOT use as a template.
+x-hardened: &hardened
+  read_only: true
+  cap_drop: [ALL]
+  security_opt:
+    - no-new-privileges:true
 services:
+  # A job that inherits the hardened defaults... and then "adds" a capability
+  # drop of its own. YAML merge keys are shallow: its cap_drop REPLACES the
+  # anchor's [ALL] (measured: compose config shows cap_drop [NET_RAW] only).
+  cron:
+    <<: *hardened
+    image: alpine:3.20
+    cap_drop: [NET_RAW]              # merge-key-replaces-list (warn) — every capability except NET_RAW is back
   # Reverse proxy that mounts the Docker socket (read-write!) — full host control.
   proxy:
     image: traefik:latest            # image-latest
