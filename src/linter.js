@@ -452,6 +452,30 @@ function ruleSecretConfigModeDecimal(svc) {
   return out;
 }
 
+// `<<: *common` is a SHALLOW merge (YAML, not Compose): a list or mapping
+// the service writes itself replaces the anchor's, it is not added to it.
+// Measured with compose v5.3.1: anchor `environment: [TZ=UTC, LOG_LEVEL=info]`
+// + service `environment: [APP=1]` -> APP only; `labels` likewise; and
+// `cap_drop: [NET_RAW]` under an anchor's `cap_drop: [ALL]` gives NET_RAW -
+// every other capability is back. `extends` is what concatenates
+// (APP + TZ, both volumes). Keys that hold security settings are named as
+// such, because there the lost entries are protections.
+const MERGE_SECURITY_KEYS = new Set(["cap_drop", "security_opt", "read_only", "tmpfs", "ulimits", "sysctls"]);
+function ruleMergeKeyReplacesList(svc) {
+  const out = [];
+  for (const o of svc.mergeOverrides || []) {
+    const sec = MERGE_SECURITY_KEYS.has(o.key);
+    const shown = o.lost.slice(0, 4).map((x) => `\`${x}\``).join(", ") + (o.lost.length > 4 ? ` and ${o.lost.length - 4} more` : "");
+    out.push({
+      level: "warn",
+      rule: "merge-key-replaces-list",
+      message: `\`${o.key}\` here REPLACES the one from \`<<: *anchor\` — YAML merge keys are shallow, so ${shown} from the anchor ${o.lost.length === 1 ? "is" : "are"} gone (measured with docker compose config).${sec ? ` These are protections: e.g. a local \`cap_drop: [NET_RAW]\` under an anchor's \`cap_drop: [ALL]\` hands every other capability back.` : ""}`,
+      hint: `Repeat the anchor's entries in this \`${o.key}\`, or move the shared part to a base service and use \`extends\`, which does concatenate lists and merge mappings.`,
+    });
+  }
+  return out;
+}
+
 function looksLikeOctalTyped(n) {
   const digits = String(n);
   return /^[0-7]?[04567]{3}$/.test(digits) && parseInt(digits, 8) !== n;
@@ -2049,6 +2073,7 @@ const RULES = [
   ruleTmpfsModeDecimal,
   ruleTmpfsModeNoSticky,
   ruleSecretConfigModeDecimal,
+  ruleMergeKeyReplacesList,
   ruleUlimitSoftExceedsHard,
   ruleZeroLimitIsUnlimited,
   ruleOomKillDisable,
