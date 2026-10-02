@@ -422,6 +422,36 @@ function ruleTmpfsModeDecimal(svc) {
   return out;
 }
 
+// The same YAML trap one level over: the long-form `mode` of a secret or a
+// config is a number, decimal unless it starts with 0. Measured (compose
+// v5.3.1 / daemon 29), a config with `uid: "1000"` read by a `user: 1000`
+// service: `mode: 644` comes up 1204 (owner -w-) and the owner's own `cat`
+// is "Permission denied", `mode: 0644` reads fine; `mode: 440` comes up 670,
+// group-writable. `docker compose config` shows the conversion ("0670").
+// For a secret with `file:`, a standalone `docker compose up` ignores mode,
+// uid and gid (measured: it warns, the file keeps its host permissions) -
+// the number still turns into the wrong mode wherever it is applied
+// (`docker stack deploy`). A quoted "440" is octal text and fine.
+function ruleSecretConfigModeDecimal(svc) {
+  const out = [];
+  for (const f of svc.fileModes || []) {
+    if (!looksLikeOctalTyped(f.mode)) continue;
+    const effects = [];
+    // Unset uid = owned by root, who reads it whatever the bits say.
+    if (f.uid != null && !(f.mode & 0o400)) effects.push(`its owner (uid ${f.uid}) cannot read it — measured: "Permission denied"`);
+    if (f.mode & 0o022) effects.push("group or others can write to it");
+    if (f.mode & 0o111) effects.push("it is executable");
+    const label = f.target ? `\`${f.source}\` (at \`${f.target}\`)` : `\`${f.source}\``;
+    out.push({
+      level: "warn",
+      rule: "secret-config-mode-decimal",
+      message: `${f.kind} ${label} has \`mode: ${f.mode}\` — a YAML number without a leading 0 is DECIMAL, so it is mounted with mode ${f.mode.toString(8)} (${describeMode(f.mode)}), not ${f.mode}${effects.length ? ": " + effects.join("; ") : ""}.${f.kind === "secret" ? " A plain `docker compose up` ignores mode on a file secret (measured); `docker stack deploy` applies it." : ""}`,
+      hint: `Write it with a leading zero (\`mode: 0${f.mode}\`) or quote it (\`mode: "${f.mode}"\`, which Compose reads as octal).`,
+    });
+  }
+  return out;
+}
+
 function looksLikeOctalTyped(n) {
   const digits = String(n);
   return /^[0-7]?[04567]{3}$/.test(digits) && parseInt(digits, 8) !== n;
@@ -2018,6 +2048,7 @@ const RULES = [
   ruleTmpfsSizeTiny,
   ruleTmpfsModeDecimal,
   ruleTmpfsModeNoSticky,
+  ruleSecretConfigModeDecimal,
   ruleUlimitSoftExceedsHard,
   ruleZeroLimitIsUnlimited,
   ruleOomKillDisable,

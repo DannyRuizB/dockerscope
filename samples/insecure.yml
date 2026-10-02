@@ -118,6 +118,11 @@ services:
         target: /tmp
         tmpfs:
           mode: 777                  # tmpfs-mode-decimal (warn) — a YAML number is DECIMAL: the dir comes up 1411 and grafana (uid 472) cannot write to it (measured)
+    configs:
+      - source: grafana_ini
+        target: /etc/grafana/grafana.ini
+        uid: "472"
+        mode: 644                    # secret-config-mode-decimal (warn) — DECIMAL again: mounted 1204, and grafana (its owner) cannot read its own config (measured)
     pid: "service:app"               # shared-namespace (warn) — sees app's processes and reads its /proc/<pid>/environ
     ipc: "shareable"                 # shared-namespace (warn) — invites any container into its IPC namespace
     networks:
@@ -139,6 +144,12 @@ services:
         API_TOKEN: sk-live-123456    # build-arg-secret (error)
     ports:
       - "80:8080"                    # port-conflict (error) — proxy already claims host port 80
+
+configs:
+  grafana_ini:
+    content: |
+      [server]
+      http_port = 3000
 
 networks:
   lockdown:

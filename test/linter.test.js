@@ -698,7 +698,7 @@ test('the insecure sample trips every security rule at once', () => {
     'healthcheck-timeout-exceeds-interval',
     'start-interval-without-start-period', 'start-interval-exceeds-start-period', 'healthcheck-zero-is-default', 'log-rotation-keeps-one-file', 'restart-policy-conflict',
     'replicas-with-fixed-port', 'memory-below-daemon-minimum', 'memswap-limit-invalid', 'shm-size-tiny', 'tmpfs-size-tiny',
-    'tmpfs-mode-decimal', 'tmpfs-mode-no-sticky',
+    'tmpfs-mode-decimal', 'tmpfs-mode-no-sticky', 'secret-config-mode-decimal',
   ]) {
     assert.ok(rules.has(r), `expected rule '${r}'`);
   }
@@ -3115,4 +3115,56 @@ test('tmpfs-mode-no-sticky: sticky, not world-writable, the default and interpol
   }
   assert.equal(memFindings(svc('    volumes:', '      - type: tmpfs', '        target: /scratch', '        tmpfs:', '          mode: 01777'), 'tmpfs-mode-no-sticky').length, 0);
   assert.equal(memFindings(svc('    volumes:', '      - type: tmpfs', '        target: /t'), 'tmpfs-mode-no-sticky').length, 0);
+});
+
+// --- secret-config-mode-decimal ----------------------------------------------
+// Measured (compose v5.3.1 / daemon 29): a config with uid 1000 and `mode: 644`
+// comes up 1204 and its owner gets "Permission denied"; `mode: 440` -> 670.
+// A plain `compose up` ignores mode on file secrets; "440" quoted is octal.
+
+const cfg = (...entry) => [
+  'services:', '  app:', '    image: busybox', '    configs:', ...entry,
+  'configs:', '  app_conf:', '    content: "x"',
+].join('\n');
+const sec = (...entry) => [
+  'services:', '  app:', '    image: busybox', '    secrets:', ...entry,
+  'secrets:', '  db_pw:', '    file: ./pw.txt',
+].join('\n');
+
+test('secret-config-mode-decimal: config mode 644 with a uid -> 1204, the owner cannot read it', () => {
+  const f = memFindings(cfg('      - source: app_conf', '        target: /etc/app.conf', '        uid: "1000"', '        mode: 644'), 'secret-config-mode-decimal');
+  assert.equal(f.length, 1);
+  assert.equal(f[0].level, 'warn');
+  assert.match(f[0].message, /config `app_conf` \(at `\/etc\/app.conf`\) has `mode: 644`.*mode 1204 \(-w----r-- \+ sticky\)/);
+  assert.match(f[0].message, /its owner \(uid 1000\) cannot read it/);
+  assert.doesNotMatch(f[0].message, /docker stack deploy/, 'the stack note is for secrets');
+  assert.match(f[0].hint, /`mode: 0644`/);
+});
+
+test('secret-config-mode-decimal: 440 -> 670 is group-writable; without a uid, no owner claim (root reads anyway)', () => {
+  const f = memFindings(cfg('      - source: app_conf', '        target: /c', '        mode: 440'), 'secret-config-mode-decimal');
+  assert.equal(f.length, 1);
+  assert.match(f[0].message, /mode 670 \(rw-rwx---\)/);
+  assert.match(f[0].message, /group or others can write to it/);
+  assert.doesNotMatch(f[0].message, /owner/);
+  const noUid644 = memFindings(cfg('      - source: app_conf', '        target: /c', '        mode: 644'), 'secret-config-mode-decimal');
+  assert.equal(noUid644.length, 1, 'still the wrong mode');
+  assert.doesNotMatch(noUid644[0].message, /cannot read/);
+});
+
+test('secret-config-mode-decimal: a secret is flagged too, with the stack-deploy note', () => {
+  const f = memFindings(sec('      - source: db_pw', '        target: db_pw', '        mode: 400'), 'secret-config-mode-decimal');
+  assert.equal(f.length, 1);
+  assert.match(f[0].message, /^secret `db_pw`.*mode 620/);
+  assert.match(f[0].message, /ignores mode on a file secret.*docker stack deploy/);
+});
+
+test('secret-config-mode-decimal: leading zero, 0o, quoted, deliberate decimals and the short form are fine', () => {
+  for (const m of ['0644', '0o644', '"644"', "'440'", '420', '288', '256']) {
+    assert.equal(memFindings(cfg('      - source: app_conf', '        target: /c', `        mode: ${m}`), 'secret-config-mode-decimal').length, 0, m);
+  }
+  assert.equal(memFindings(cfg('      - app_conf'), 'secret-config-mode-decimal').length, 0, 'short form has no mode');
+  assert.equal(memFindings(cfg('      - source: app_conf', '        target: /c'), 'secret-config-mode-decimal').length, 0, 'no mode');
+  // Anchor: the same harness DOES flag the bad spelling, so the loop above cannot pass by emptiness.
+  assert.equal(memFindings(cfg('      - source: app_conf', '        target: /c', '        mode: 644'), 'secret-config-mode-decimal').length, 1);
 });
