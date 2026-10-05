@@ -280,6 +280,14 @@ window.DockerScope.parseCompose = function (yamlText, fileMap) {
       fileModes: [...parseFileModes(raw.secrets, "secret"), ...parseFileModes(raw.configs, "config")],
       mergeOverrides: parseMergeOverrides(unmergedServices[name]),
       retypedValues: parseRetypedValues(writtenServices[name], typedServices[name]),
+      // `dns:` is a single string or a list of nameserver addresses; every
+      // entry must be an IP (resolv.conf has no room for a hostname). The
+      // daemon refuses a non-IP at `up` though `compose config` accepts it.
+      dns: parseStringList(raw.dns),
+      // `extra_hosts:` is `host:IP` (list) or `{host: IP}` (mapping); the IP
+      // part must be an IP or the special token host-gateway. Split on the
+      // FIRST colon so an IPv6 address (host:2001:db8::1) stays intact.
+      extraHosts: parseExtraHosts(raw.extra_hosts),
       dockerfile,
       stack: resolveStack(name, dockerfile, fileMap, warnings),
     });
@@ -336,6 +344,31 @@ window.DockerScope.parseCompose = function (yamlText, fileMap) {
 // Secrets or configs a service mounts: short form is a list of names, long
 // form a list of `{source, target, ...}` (only `source` names the top-level
 // entry). The two fields share the exact same grammar, so one parser serves both.
+// A field that is a single string or a list of strings -> array of strings.
+function parseStringList(value) {
+  if (value == null) return [];
+  if (Array.isArray(value)) return value.filter((v) => typeof v === "string" || typeof v === "number").map(String);
+  if (typeof value === "string" || typeof value === "number") return [String(value)];
+  return [];
+}
+
+// extra_hosts: list of "host:IP" / "host=IP", or a mapping {host: IP}. Returns
+// [{host, ip}] with the IP being everything after the first ':' or '=' (so an
+// IPv6 address keeps its colons).
+function parseExtraHosts(value) {
+  const out = [];
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      if (typeof item !== "string") continue;
+      const m = /^([^:=]+)[:=](.*)$/.exec(item);
+      if (m) out.push({ host: m[1], ip: m[2] });
+    }
+  } else if (value && typeof value === "object") {
+    for (const [host, ip] of Object.entries(value)) out.push({ host, ip: ip == null ? "" : String(ip) });
+  }
+  return out;
+}
+
 function parseNamedRefs(value) {
   if (!Array.isArray(value)) return [];
   const out = [];

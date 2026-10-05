@@ -503,6 +503,57 @@ function ruleUnquotedValueRetyped(svc) {
   return out;
 }
 
+// Lenient "is this an IP?" - catches a hostname or a typo (the actual footgun)
+// without ever rejecting a real address. IPv4 is exact (octets 0-255); IPv6 is
+// loose on purpose: a value with a ':' made only of hex, ':' and '.' (for an
+// embedded v4 or an IPv4-mapped address) counts, a zone id is stripped first.
+// A hostname (dots + letters, no ':') and a typo like "notanip" fall through.
+function looksLikeIp(value) {
+  const s = String(value).replace(/%.*$/, "");
+  const v4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(s);
+  if (v4) return v4.slice(1).every((o) => Number(o) <= 255);
+  return s.includes(":") && /^[0-9a-fA-F:.]+$/.test(s);
+}
+
+// `dns:` entries become nameserver lines in the container's resolv.conf, which
+// only takes IP addresses. Measured with compose v5.3.1 / daemon 29.1.3:
+// `dns: [dns.google]` passes `docker compose config` and then the daemon
+// refuses the container at `up` - "invalid DNS address: ParseAddr(...)". A
+// hostname cannot be a nameserver (nothing can resolve it yet), so this is
+// always a mistake.
+function ruleDnsNotAnIp(svc) {
+  const out = [];
+  for (const entry of svc.dns || []) {
+    if (looksLikeIp(entry)) continue;
+    out.push({
+      level: "error",
+      rule: "dns-not-an-ip",
+      message: `\`dns: ${entry}\` is not an IP address - a nameserver in resolv.conf must be one. Measured (compose v5.3.1): \`docker compose config\` accepts it, then the daemon refuses the container at \`up\` with "invalid DNS address: ParseAddr(\\"${entry}\\")".`,
+      hint: `Use the resolver's IP address (e.g. 1.1.1.1 or 2606:4700:4700::1111), not a hostname - a name cannot be a nameserver because nothing can resolve it yet.`,
+    });
+  }
+  return out;
+}
+
+// `extra_hosts:` writes `IP  host` into the container's /etc/hosts; the IP part
+// must be an IP or the special token `host-gateway`. Measured with compose
+// v5.3.1 / daemon 29.1.3: `myhost:notanip` passes `docker compose config` and
+// the daemon then refuses the container at `up` - "invalid IP address in
+// add-host: notanip".
+function ruleExtraHostsInvalidIp(svc) {
+  const out = [];
+  for (const { host, ip } of svc.extraHosts || []) {
+    if (ip === "host-gateway" || looksLikeIp(ip)) continue;
+    out.push({
+      level: "error",
+      rule: "extra-hosts-invalid-ip",
+      message: `\`extra_hosts\` entry for \`${host}\` maps to \`${ip}\`, which is not an IP address. Measured (compose v5.3.1): \`docker compose config\` accepts it, then the daemon refuses the container at \`up\` with "invalid IP address in add-host: ${ip}".`,
+      hint: `Give \`${host}\` an IP (\`${host}:10.0.0.5\`), or the special token \`${host}:host-gateway\` to reach the Docker host.`,
+    });
+  }
+  return out;
+}
+
 // `<<: *common` is a SHALLOW merge (YAML, not Compose): a list or mapping
 // the service writes itself replaces the anchor's, it is not added to it.
 // Measured with compose v5.3.1: anchor `environment: [TZ=UTC, LOG_LEVEL=info]`
@@ -2127,6 +2178,8 @@ const RULES = [
   ruleMergeKeyReplacesList,
   ruleVolumeModeUnknown,
   ruleUnquotedValueRetyped,
+  ruleDnsNotAnIp,
+  ruleExtraHostsInvalidIp,
   ruleUlimitSoftExceedsHard,
   ruleZeroLimitIsUnlimited,
   ruleOomKillDisable,
