@@ -699,6 +699,7 @@ test('the insecure sample trips every security rule at once', () => {
     'start-interval-without-start-period', 'start-interval-exceeds-start-period', 'healthcheck-zero-is-default', 'log-rotation-keeps-one-file', 'restart-policy-conflict',
     'replicas-with-fixed-port', 'memory-below-daemon-minimum', 'memswap-limit-invalid', 'shm-size-tiny', 'tmpfs-size-tiny',
     'tmpfs-mode-decimal', 'tmpfs-mode-no-sticky', 'secret-config-mode-decimal', 'merge-key-replaces-list',
+    'volume-mode-unknown', 'unquoted-value-retyped',
   ]) {
     assert.ok(rules.has(r), `expected rule '${r}'`);
   }
@@ -3221,4 +3222,79 @@ test('merge-key-replaces-list: in a list of anchors the earlier one wins a key',
   assert.equal(f.length, 1);
   assert.match(f[0].message, /`A=1`/);
   assert.doesNotMatch(f[0].message, /B=1/);
+});
+
+// --- volume-mode-unknown -----------------------------------------------------
+// Measured with compose v5.3.1: `:readonly`, `:read-only`, `:RO` and `:foo`
+// are dropped without a warning (no read_only in config, the container wrote
+// to the host); `:ro` and `:ro,z` refused the write.
+
+test('volume-mode-unknown: a read-only spelling Compose does not know is a READ-WRITE mount', () => {
+  for (const opt of ['readonly', 'read-only', 'RO', 'r0']) {
+    const f = memFindings(svc('    volumes:', `      - ./data:/data:${opt}`), 'volume-mode-unknown');
+    assert.equal(f.length, 1, opt);
+    assert.equal(f[0].level, 'warn');
+    assert.match(f[0].message, /is mounted READ-WRITE/);
+    assert.match(f[0].hint, /`\.\/data:\/data:ro`/);
+  }
+  assert.equal(DS.parseCompose(svc('    volumes:', '      - ./data:/data:readonly')).services[0].volumes[0].readonly, false);
+});
+
+test('volume-mode-unknown: any other unknown word is named as dropped', () => {
+  const f = memFindings(svc('    volumes:', '      - ./data:/data:ro,foo'), 'volume-mode-unknown');
+  assert.equal(f.length, 1);
+  assert.match(f[0].message, /`:foo` on `\.\/data:\/data` is not a volume option Compose knows/);
+  assert.doesNotMatch(f[0].message, /READ-WRITE/, 'ro is there, the mount is read-only');
+});
+
+test('volume-mode-unknown: every option Compose knows is fine', () => {
+  for (const opt of ['ro', 'rw', 'z', 'Z', 'ro,z', 'rw,Z', 'nocopy', 'ro,nocopy', 'shared', 'rshared', 'slave', 'rslave', 'private', 'rprivate', 'ro,rshared', 'cached', 'delegated', 'consistent']) {
+    assert.equal(memFindings(svc('    volumes:', `      - ./data:/data:${opt}`), 'volume-mode-unknown').length, 0, opt);
+  }
+  assert.equal(memFindings(svc('    volumes:', '      - ./data:/data', '      - /cache', '      - type: bind', '        source: ./x', '        target: /x', '        read_only: true'), 'volume-mode-unknown').length, 0);
+  // Anchor: the same harness DOES flag the bad spelling.
+  assert.equal(memFindings(svc('    volumes:', '      - ./data:/data:readonly'), 'volume-mode-unknown').length, 1);
+});
+
+// --- unquoted-value-retyped --------------------------------------------------
+// Measured with compose v5.3.1 (config + env inside a running container, and
+// a build): UMASK: 0022 -> 18, PY: 3.10 -> 3.1, 1.0 -> 1, 1e3 -> 1000,
+// 2024-01-05 -> "2024-01-05 00:00:00 +0000 UTC"; .inf fails config; quoted
+// values and the list form pass through.
+
+test('unquoted-value-retyped: octal, floats and dates in environment say what the container gets', () => {
+  const env = (...l) => svc('    environment:', ...l);
+  const cases = [['UMASK: 0022', 'UMASK=18'], ['PY: 3.10', 'PY=3.1'], ['V: 1.0', 'V=1'], ['E: 1e3', 'E=1000'],
+    ['PORT: 08080', 'PORT=8080'], ['HEX: 0x1F', 'HEX=31'], ['N: 1_000', 'N=1000'], ['D: 2024-01-05', 'D=2024-01-05 00:00:00 +0000 UTC']];
+  for (const [line, got] of cases) {
+    const f = memFindings(env(`      ${line}`), 'unquoted-value-retyped');
+    assert.equal(f.length, 1, line);
+    assert.equal(f[0].level, 'warn');
+    assert.ok(f[0].message.includes(`the container gets \`${got}\``), `${line}: ${f[0].message}`);
+    assert.match(f[0].hint, /Quote it/);
+  }
+  assert.match(memFindings(env('      PY: 3.10'), 'unquoted-value-retyped')[0].message, /as a number/);
+  assert.match(memFindings(env('      D: 2024-01-05'), 'unquoted-value-retyped')[0].message, /as a timestamp/);
+});
+
+test('unquoted-value-retyped: build.args and labels too; .inf is an error', () => {
+  const b = memFindings(svc('    build:', '      context: .', '      args:', '        PYTHON_VERSION: 3.10'), 'unquoted-value-retyped');
+  assert.equal(b.length, 1);
+  assert.match(b[0].message, /`build.args` `PYTHON_VERSION: 3.10`.*the build gets `PYTHON_VERSION=3.1`/);
+  const l = memFindings(svc('    labels:', '      version: 1.10'), 'unquoted-value-retyped');
+  assert.equal(l.length, 1);
+  assert.match(l[0].message, /the label reads `version=1.1`/);
+  const inf = memFindings(svc('    environment:', '      X: .inf'), 'unquoted-value-retyped');
+  assert.equal(inf.length, 1);
+  assert.equal(inf[0].level, 'error');
+  assert.match(inf[0].message, /unsupported value: \+Inf/);
+});
+
+test('unquoted-value-retyped: quoted, list form, plain integers, words and booleans are fine', () => {
+  for (const line of ['UMASK: "0022"', "PY: '3.10'", 'PORT: 8080', 'Z: 0', 'NEG: -0', 'S: hello', 'B: true', 'Y: yes', 'T: 12:30', 'E:', 'R: ${X}']) {
+    assert.equal(memFindings(svc('    environment:', `      ${line}`), 'unquoted-value-retyped').length, 0, line);
+  }
+  assert.equal(memFindings(svc('    environment:', '      - UMASK=0022', '      - PY=3.10'), 'unquoted-value-retyped').length, 0, 'list form');
+  // Anchor: the same harness DOES flag the unquoted spelling.
+  assert.equal(memFindings(svc('    environment:', '      UMASK: 0022'), 'unquoted-value-retyped').length, 1);
 });

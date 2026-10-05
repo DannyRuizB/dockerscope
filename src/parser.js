@@ -7,10 +7,11 @@
 //     environment: [{key, value}],   // value is null for `KEY=` and for interpolation refs like ${X}
 //     restart: string|null,
 //     healthcheck: object|null,
-//     volumes: [{type, source, target, readonly}],  // type: "named" | "bind" | "anonymous"
+//     volumes: [{type, source, target, readonly, unknownOpts}],  // type: "named" | "bind" | "anonymous"; unknownOpts: short-form mode words Compose drops
 //     tmpfs: [string],               // service-level `tmpfs:` targets (options stripped)
 //     tmpfsSizes: [{target, size, form}],  // `size` of every tmpfs mount, raw string; form "tmpfs" (option) | "volume" (long form)
 //     tmpfsModes: [{target, mode, raw, form}],  // `mode` of every tmpfs mount: effective permission bits (number) + as written
+//     retypedValues: [{field, key, raw, value}],  // unquoted environment/labels/build.args values YAML re-types; value = what Compose passes on (null when it cannot)
 //     mergeOverrides: [{key, lost}],  // list/map keys a `<<: *anchor` brought in that the service replaced; lost = what it dropped
 //     fileModes: [{kind, source, target, mode, uid}],  // long-form secrets/configs whose `mode` is a YAML number; kind "secret" | "config"
 //     devices: [{source, target, permissions}],  // `devices:` mappings; CDI names keep source, null target
@@ -102,6 +103,20 @@ window.DockerScope.parseCompose = function (yamlText, fileMap) {
     unmerged = null;
   }
   const unmergedServices = unmerged && unmerged.services && typeof unmerged.services === "object" ? unmerged.services : {};
+
+  // And twice more, to catch values YAML re-types before Compose sees them:
+  // once with every scalar kept as written (FAILSAFE) and once typed the way
+  // Compose types them, timestamps included.
+  let asWritten, typed;
+  try {
+    asWritten = jsyaml.load(yamlText, { schema: jsyaml.FAILSAFE_SCHEMA });
+    typed = jsyaml.load(yamlText, { schema: composeYamlSchema().withTags(jsyaml.timestampTag) });
+  } catch {
+    asWritten = typed = null;
+  }
+  const servicesOf = (d) => (d && d.services && typeof d.services === "object" ? d.services : {});
+  const writtenServices = servicesOf(asWritten);
+  const typedServices = servicesOf(typed);
 
   const services = [];
   const rawServices = doc.services || {};
@@ -264,6 +279,7 @@ window.DockerScope.parseCompose = function (yamlText, fileMap) {
       configs: parseNamedRefs(raw.configs),
       fileModes: [...parseFileModes(raw.secrets, "secret"), ...parseFileModes(raw.configs, "config")],
       mergeOverrides: parseMergeOverrides(unmergedServices[name]),
+      retypedValues: parseRetypedValues(writtenServices[name], typedServices[name]),
       dockerfile,
       stack: resolveStack(name, dockerfile, fileMap, warnings),
     });
@@ -652,6 +668,11 @@ function parseVolumes(value, topVolumeSet, warnings, serviceName) {
   return out;
 }
 
+// The words Compose understands after the second colon of a short-form
+// volume. Anything else is dropped without a warning (measured, compose
+// v5.3.1: `readonly`, `read-only`, `RO`, `foo` - rc 0, mounted read-write).
+const VOLUME_SHORT_OPTS = new Set(["ro", "rw", "z", "Z", "nocopy", "shared", "rshared", "slave", "rslave", "private", "rprivate", "cached", "delegated", "consistent"]);
+
 function parseSingleVolume(entry, _topVolumeSet) {
   if (typeof entry === "string") {
     const parts = entry.split(":");
@@ -671,10 +692,11 @@ function parseSingleVolume(entry, _topVolumeSet) {
       opts = parts.slice(2).join(":");
     }
     const readonly = /(^|,)ro(,|$)/.test(opts);
+    const unknownOpts = opts ? opts.split(",").filter((o) => o && !VOLUME_SHORT_OPTS.has(o)) : [];
     const type = isHostPath(source)
       ? "bind"
       : "named"; // named (declared at top-level OR implicit — both treated the same visually)
-    return { type, source, target, readonly };
+    return { type, source, target, readonly, unknownOpts };
   }
   if (entry && typeof entry === "object") {
     let type = "bind";
@@ -1041,6 +1063,55 @@ function mergeCompose(parent, child) {
 // Accepts:
 //   { KEY: "value", FLAG: true, NUM: 42 }   → mapping
 //   ["KEY=value", "KEY", "KEY=${REF}"]      → list (KEY without = means "pass-through from host", value=null)
+// An unquoted value that YAML reads as a number or a timestamp reaches the
+// container re-typed. Measured with compose v5.3.1 (docker compose config and
+// `env` inside a running container): `UMASK: 0022` -> 18 (legacy octal),
+// `PY: 3.10` -> 3.1, `V: 1.0` -> 1, `1e3` -> 1000, `1_000` -> 1000, `08080`
+// -> 8080, `0x1F` -> 31, `2024-01-05` -> "2024-01-05 00:00:00 +0000 UTC";
+// `.inf` makes `docker compose config` fail. build.args and labels likewise
+// (a build saw PYTHON_VERSION=3.1). Quoted values and the `- KEY=value` list
+// form are passed through as written. Only the service's own mapping is
+// read: what a `<<: *anchor` brings in is judged where the anchor is used.
+function parseRetypedValues(written, typedSvc) {
+  const out = [];
+  if (!written || typeof written !== "object" || !typedSvc || typeof typedSvc !== "object") return out;
+  const fields = [
+    ["environment", written.environment, typedSvc.environment],
+    ["labels", written.labels, typedSvc.labels],
+    ["build.args", written.build && written.build.args, typedSvc.build && typedSvc.build.args],
+  ];
+  for (const [field, w, t] of fields) {
+    if (!w || typeof w !== "object" || Array.isArray(w) || !t || typeof t !== "object" || Array.isArray(t)) continue;
+    for (const [key, raw] of Object.entries(w)) {
+      if (key === "<<" || typeof raw !== "string") continue;
+      const v = t[key];
+      let value;
+      if (typeof v === "number") {
+        if (!Number.isFinite(v)) value = null;
+        else value = Object.is(v, -0) ? "-0" : String(v);
+      } else if (Object.prototype.toString.call(v) === "[object Date]") {
+        value = goTimestamp(v, raw);
+      } else {
+        continue;
+      }
+      if (value === raw) continue;
+      out.push({ field, key, raw, value });
+    }
+  }
+  return out;
+}
+
+// How Go prints a time.Time in UTC ("2024-01-05 10:20:30 +0000 UTC"). A
+// timestamp written with another offset keeps that offset in Go; we do not
+// guess its zone name and return null.
+function goTimestamp(d, raw) {
+  if (/[+-]\d{1,2}(:?\d{2})?$/.test(raw.replace(/^\d{4}-\d{2}-\d{2}/, ""))) return null;
+  const p = (n, w = 2) => String(n).padStart(w, "0");
+  const ms = d.getUTCMilliseconds();
+  const frac = ms ? "." + p(ms, 3).replace(/0+$/, "") : "";
+  return `${d.getUTCFullYear()}-${p(d.getUTCMonth() + 1)}-${p(d.getUTCDate())} ${p(d.getUTCHours())}:${p(d.getUTCMinutes())}:${p(d.getUTCSeconds())}${frac} +0000 UTC`;
+}
+
 function parseEnvironment(value) {
   if (!value) return [];
   if (Array.isArray(value)) {

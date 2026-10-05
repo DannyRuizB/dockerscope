@@ -126,6 +126,7 @@ services:
     ports:
       - "127.0.0.1:3000:3000"        # ports-on-internal-network (warn) — the only network is internal, the mapping is dead
     volumes:
+      - ./dashboards:/var/lib/grafana/dashboards:readonly   # volume-mode-unknown (warn) — Compose only knows `ro`: this mount is READ-WRITE (measured: the container wrote to the host)
       - type: tmpfs
         target: /tmp
         tmpfs:
@@ -154,6 +155,7 @@ services:
       context: .
       args:
         API_TOKEN: sk-live-123456    # build-arg-secret (error)
+        NODE_VERSION: 20.10          # unquoted-value-retyped (warn) — YAML reads a number: the build gets NODE_VERSION=20.1 (measured)
     ports:
       - "80:8080"                    # port-conflict (error) — proxy already claims host port 80
 
