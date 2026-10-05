@@ -452,6 +452,57 @@ function ruleSecretConfigModeDecimal(svc) {
   return out;
 }
 
+// A short-form volume mode Compose does not know is dropped without a word.
+// Measured with compose v5.3.1: `./data:/data:readonly`, `:read-only` and
+// `:RO` (the words are case-sensitive) give no `read_only: true` in
+// `docker compose config`, no warning at `up`, and the container wrote to
+// the host directory through all three; `:ro` and `:ro,z` refused the write.
+const RO_INTENT = /^(read[-_]?only|r[o0]|readonly)$/i;
+function ruleVolumeModeUnknown(svc) {
+  const out = [];
+  for (const v of svc.volumes || []) {
+    for (const opt of v.unknownOpts || []) {
+      const meantRo = RO_INTENT.test(opt) && !v.readonly;
+      out.push({
+        level: "warn",
+        rule: "volume-mode-unknown",
+        message: meantRo
+          ? `\`${v.source}:${v.target}:${opt}\` is mounted READ-WRITE — Compose only knows \`ro\`, drops \`${opt}\` without a word and the container can write to it (measured: \`:readonly\`, \`:read-only\` and \`:RO\` all let the container write to the host).`
+          : `\`:${opt}\` on \`${v.source ? v.source + ":" : ""}${v.target}\` is not a volume option Compose knows — it is dropped without a warning (measured with docker compose config and up).`,
+        hint: meantRo
+          ? `Write \`${v.source}:${v.target}:ro\` (lower case), or use the long form with \`read_only: true\`.`
+          : "Compose understands ro, rw, z, Z, nocopy, the propagation modes (shared, rshared, slave, rslave, private, rprivate) and cached/delegated/consistent. Anything else needs the long form.",
+      });
+    }
+  }
+  return out;
+}
+
+// An unquoted environment / build.args / labels value that YAML reads as a
+// number or a timestamp reaches the container re-typed (measured with compose
+// v5.3.1, docker compose config and `env` in a running container):
+// `UMASK: 0022` -> 18, `PYTHON_VERSION: 3.10` -> 3.1 (a build saw 3.1),
+// `V: 1.0` -> 1, `2024-01-05` -> "2024-01-05 00:00:00 +0000 UTC", and `.inf`
+// makes `docker compose config` fail outright.
+const RETYPED_WHERE = { environment: "the container gets", "build.args": "the build gets", labels: "the label reads" };
+function ruleUnquotedValueRetyped(svc) {
+  const out = [];
+  for (const r of svc.retypedValues || []) {
+    const nonFinite = r.value === null && !/^\d{4}-/.test(r.raw);
+    out.push({
+      level: nonFinite ? "error" : "warn",
+      rule: "unquoted-value-retyped",
+      message: nonFinite
+        ? `\`${r.field}\` \`${r.key}: ${r.raw}\` is read by YAML as infinity / NaN, and Compose refuses the file (measured: "json: unsupported value: +Inf" from docker compose config).`
+        : r.value === null
+          ? `\`${r.field}\` \`${r.key}: ${r.raw}\` is read by YAML as a timestamp and Compose passes on Go's rendering of it, not the text you wrote (measured).`
+          : `\`${r.field}\` \`${r.key}: ${r.raw}\` is read by YAML as a ${/^\d{4}-/.test(r.raw) ? "timestamp" : "number"} — ${RETYPED_WHERE[r.field]} \`${r.key}=${r.value}\` (measured with docker compose config and inside a running container).`,
+      hint: `Quote it — \`${r.key}: "${r.raw}"\` — or use the list form \`- ${r.key}=${r.raw}\`, which Compose passes through as written.`,
+    });
+  }
+  return out;
+}
+
 // `<<: *common` is a SHALLOW merge (YAML, not Compose): a list or mapping
 // the service writes itself replaces the anchor's, it is not added to it.
 // Measured with compose v5.3.1: anchor `environment: [TZ=UTC, LOG_LEVEL=info]`
@@ -2074,6 +2125,8 @@ const RULES = [
   ruleTmpfsModeNoSticky,
   ruleSecretConfigModeDecimal,
   ruleMergeKeyReplacesList,
+  ruleVolumeModeUnknown,
+  ruleUnquotedValueRetyped,
   ruleUlimitSoftExceedsHard,
   ruleZeroLimitIsUnlimited,
   ruleOomKillDisable,
