@@ -699,7 +699,7 @@ test('the insecure sample trips every security rule at once', () => {
     'start-interval-without-start-period', 'start-interval-exceeds-start-period', 'healthcheck-zero-is-default', 'log-rotation-keeps-one-file', 'restart-policy-conflict',
     'replicas-with-fixed-port', 'memory-below-daemon-minimum', 'memswap-limit-invalid', 'shm-size-tiny', 'tmpfs-size-tiny',
     'tmpfs-mode-decimal', 'tmpfs-mode-no-sticky', 'secret-config-mode-decimal', 'merge-key-replaces-list',
-    'volume-mode-unknown', 'unquoted-value-retyped',
+    'volume-mode-unknown', 'unquoted-value-retyped', 'dns-not-an-ip', 'extra-hosts-invalid-ip',
   ]) {
     assert.ok(rules.has(r), `expected rule '${r}'`);
   }
@@ -3297,4 +3297,40 @@ test('unquoted-value-retyped: quoted, list form, plain integers, words and boole
   assert.equal(memFindings(svc('    environment:', '      - UMASK=0022', '      - PY=3.10'), 'unquoted-value-retyped').length, 0, 'list form');
   // Anchor: the same harness DOES flag the unquoted spelling.
   assert.equal(memFindings(svc('    environment:', '      UMASK: 0022'), 'unquoted-value-retyped').length, 1);
+});
+
+// --- dns-not-an-ip -----------------------------------------------------------
+// Measured with compose v5.3.1 / daemon 29.1.3: `dns: [dns.google]` passes
+// `docker compose config` and the daemon refuses the container at up
+// ("invalid DNS address: ParseAddr(...)"). IPv4 and IPv6 pass.
+
+test('dns-not-an-ip: a hostname nameserver is an error, IPv4/IPv6 are fine', () => {
+  const f = memFindings(svc('    dns:', '      - dns.google'), 'dns-not-an-ip');
+  assert.equal(f.length, 1);
+  assert.equal(f[0].level, 'error');
+  assert.match(f[0].message, /invalid DNS address/);
+  for (const ip of ['1.1.1.1', '8.8.8.8', '2001:4860:4860::8888', '::1']) {
+    assert.equal(memFindings(svc('    dns:', `      - "${ip}"`), 'dns-not-an-ip').length, 0, ip);
+  }
+  // single-string form, and a typo'd IPv4
+  assert.equal(memFindings(svc('    dns: resolver.local'), 'dns-not-an-ip').length, 1);
+  assert.equal(memFindings(svc('    dns:', '      - 999.1.1.1'), 'dns-not-an-ip').length, 1, 'octet > 255');
+});
+
+// --- extra-hosts-invalid-ip --------------------------------------------------
+// Measured: `extra_hosts: [myhost:notanip]` passes config, daemon refuses at up
+// ("invalid IP address in add-host: notanip"). host-gateway and IPv6 are fine.
+
+test('extra-hosts-invalid-ip: a non-IP target is an error; host-gateway, IPv4, IPv6 pass', () => {
+  const f = memFindings(svc('    extra_hosts:', '      - "myhost:notanip"'), 'extra-hosts-invalid-ip');
+  assert.equal(f.length, 1);
+  assert.equal(f[0].level, 'error');
+  assert.match(f[0].message, /invalid IP address in add-host: notanip/);
+  for (const line of ['"h:10.0.0.1"', '"h:2001:db8::1"', '"host.docker.internal:host-gateway"']) {
+    assert.equal(memFindings(svc('    extra_hosts:', `      - ${line}`), 'extra-hosts-invalid-ip').length, 0, line);
+  }
+  // mapping form is read too
+  assert.equal(memFindings(svc('    extra_hosts:', '      badhost: notanip'), 'extra-hosts-invalid-ip').length, 1);
+  // Anchor: the same harness clears a good one
+  assert.equal(memFindings(svc('    extra_hosts:', '      goodhost: 10.0.0.9'), 'extra-hosts-invalid-ip').length, 0);
 });

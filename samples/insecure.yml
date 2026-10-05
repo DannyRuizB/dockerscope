@@ -156,6 +156,10 @@ services:
       args:
         API_TOKEN: sk-live-123456    # build-arg-secret (error)
         NODE_VERSION: 20.10          # unquoted-value-retyped (warn) — YAML reads a number: the build gets NODE_VERSION=20.1 (measured)
+    dns:
+      - dns.google                   # dns-not-an-ip (error) — a nameserver must be an IP; the daemon refuses the container at up
+    extra_hosts:
+      - "registry.internal:notanip"  # extra-hosts-invalid-ip (error) — not an IP; "invalid IP address in add-host" at up
     ports:
       - "80:8080"                    # port-conflict (error) — proxy already claims host port 80
 
