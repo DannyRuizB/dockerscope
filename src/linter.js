@@ -540,6 +540,98 @@ function ruleDnsNotAnIp(svc) {
 // v5.3.1 / daemon 29.1.3: `myhost:notanip` passes `docker compose config` and
 // the daemon then refuses the container at `up` - "invalid IP address in
 // add-host: notanip".
+// Rules 78-79: a capability or security_opt the daemon does not know. Both
+// pass `docker compose config` and are refused at `up` (measured, compose
+// v5.3.1 / daemon 29.1.3), so the service never starts.
+//  - cap_add / cap_drop: the daemon takes the 41 Linux capabilities, with or
+//    without CAP_ and in any case, plus ALL. `NET_ADMN` -> "invalid CapAdd:
+//    unknown capability: CAP_NET_ADMN"; a stray space or comma inside a
+//    quoted entry, and `CAP_ALL`, are refused too.
+//  - security_opt: `no-new-privileges` bare, or key[:=]value with label /
+//    apparmor / seccomp (any value), no-new-privileges / writable-cgroups
+//    (a Go bool: 1 t T true True TRUE 0 f F false False FALSE) and
+//    systempaths (only `unconfined`). `no_new_privileges:true`,
+//    `lable=disable`, `no-new-privileges:yes`, a bare `seccomp` and upper
+//    case keys are all refused ("invalid --security-opt").
+const LINUX_CAPS = new Set([
+  "CHOWN", "DAC_OVERRIDE", "DAC_READ_SEARCH", "FOWNER", "FSETID", "KILL", "SETGID", "SETUID",
+  "SETPCAP", "LINUX_IMMUTABLE", "NET_BIND_SERVICE", "NET_BROADCAST", "NET_ADMIN", "NET_RAW",
+  "IPC_LOCK", "IPC_OWNER", "SYS_MODULE", "SYS_RAWIO", "SYS_CHROOT", "SYS_PTRACE", "SYS_PACCT",
+  "SYS_ADMIN", "SYS_BOOT", "SYS_NICE", "SYS_RESOURCE", "SYS_TIME", "SYS_TTY_CONFIG", "MKNOD",
+  "LEASE", "AUDIT_WRITE", "AUDIT_CONTROL", "SETFCAP", "MAC_OVERRIDE", "MAC_ADMIN", "SYSLOG",
+  "WAKE_ALARM", "BLOCK_SUSPEND", "AUDIT_READ", "PERFMON", "BPF", "CHECKPOINT_RESTORE",
+]);
+
+function editDistance(a, b) {
+  const d = Array.from({ length: a.length + 1 }, (_, i) => [i]);
+  for (let j = 1; j <= b.length; j++) d[0][j] = j;
+  for (let i = 1; i <= a.length; i++) {
+    for (let j = 1; j <= b.length; j++) {
+      d[i][j] = Math.min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+    }
+  }
+  return d[a.length][b.length];
+}
+
+function closestCap(name) {
+  let best = null;
+  let bestD = 3;
+  for (const cap of LINUX_CAPS) {
+    const dist = editDistance(name, cap);
+    if (dist < bestD) { best = cap; bestD = dist; }
+  }
+  return best;
+}
+
+function ruleCapUnknown(svc) {
+  const findings = [];
+  for (const [field, list] of [["cap_add", svc.capAdd], ["cap_drop", svc.capDrop]]) {
+    for (const cap of list) {
+      if (cap === "ALL" || LINUX_CAPS.has(cap.replace(/^CAP_/, ""))) continue;
+      const near = closestCap(cap.replace(/^CAP_/, "").trim().replace(/[,;]+$/, ""));
+      findings.push({
+        level: "error",
+        rule: "cap-unknown",
+        message: `\`${field}\` names \`${cap}\`, which is not a Linux capability — the daemon refuses the container at \`up\`.`,
+        hint: `Measured: \`docker compose config\` accepts it, then \`up\` fails with "invalid ${field === "cap_add" ? "CapAdd" : "CapDrop"}: unknown capability". ${near ? `Did you mean \`${near}\`? ` : ""}Valid names are the 41 Linux capabilities (with or without \`CAP_\`) and \`ALL\`${cap === "CAP_ALL" ? " — not `CAP_ALL`" : ""}.`,
+      });
+    }
+  }
+  return findings;
+}
+
+const GO_BOOL = new Set(["1", "t", "T", "true", "True", "TRUE", "0", "f", "F", "false", "False", "FALSE"]);
+function securityOptProblem(opt) {
+  if (opt === "no-new-privileges") return null;
+  const m = /^([^:=]+)[:=](.*)$/.exec(opt);
+  if (!m) return `a bare \`${opt}\` is not an option — it needs a value (\`${opt}=...\`)${/^(label|apparmor|seccomp|systempaths|writable-cgroups)$/.test(opt) ? "" : ", and the key is not one the daemon knows"}`;
+  const [, key, value] = m;
+  if (key === "label" || key === "apparmor" || key === "seccomp") return null;
+  if (key === "no-new-privileges" || key === "writable-cgroups") {
+    return GO_BOOL.has(value) ? null : `\`${key}\` takes a boolean (true/false, 1/0), not \`${value}\``;
+  }
+  if (key === "systempaths") return value === "unconfined" ? null : "`systempaths` only takes `unconfined`";
+  const known = ["no-new-privileges", "label", "apparmor", "seccomp", "systempaths", "writable-cgroups"];
+  const near = known.find((k) => editDistance(key.toLowerCase().replace(/_/g, "-"), k) <= 2);
+  return `\`${key}\` is not a security option${near ? ` — did you mean \`${near}\`?` : ""}`;
+}
+
+function ruleSecurityOptUnknown(svc) {
+  const findings = [];
+  for (const raw of svc.securityOpt) {
+    const opt = String(raw);
+    const problem = securityOptProblem(opt);
+    if (!problem) continue;
+    findings.push({
+      level: "error",
+      rule: "security-opt-unknown",
+      message: `\`security_opt: ${opt}\` is refused by the daemon at \`up\` — ${problem}.`,
+      hint: "Measured: `docker compose config` accepts it, then `up` fails with \"invalid --security-opt\". Valid forms: `no-new-privileges[:true|false]`, `label=...`, `apparmor=...`, `seccomp=...` (`:` or `=`), `systempaths=unconfined`, `writable-cgroups=true|false`. The hardening it was meant to add never happens: the service does not start.",
+    });
+  }
+  return findings;
+}
+
 function ruleExtraHostsInvalidIp(svc) {
   const out = [];
   for (const { host, ip } of svc.extraHosts || []) {
@@ -1351,7 +1443,9 @@ function ruleNoReadOnly(svc) {
   }];
 }
 
-const NO_NEW_PRIVS_PATTERN = /^no-new-privileges(:true|=true)?$/;
+// The daemon parses the value with Go's strconv.ParseBool (measured, daemon
+// 29.1.3): `=1`, `=t`, `=True`, `=TRUE` all switch it on, `=yes` is refused.
+const NO_NEW_PRIVS_PATTERN = /^no-new-privileges([:=](1|t|T|true|True|TRUE))?$/;
 function ruleNoNewPrivileges(svc) {
   if (svc.capAdd.length === 0) return [];
   if (svc.securityOpt.some((o) => NO_NEW_PRIVS_PATTERN.test(String(o).trim()))) return [];
@@ -2180,6 +2274,8 @@ const RULES = [
   ruleUnquotedValueRetyped,
   ruleDnsNotAnIp,
   ruleExtraHostsInvalidIp,
+  ruleCapUnknown,
+  ruleSecurityOptUnknown,
   ruleUlimitSoftExceedsHard,
   ruleZeroLimitIsUnlimited,
   ruleOomKillDisable,
