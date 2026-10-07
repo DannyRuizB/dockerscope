@@ -700,6 +700,7 @@ test('the insecure sample trips every security rule at once', () => {
     'replicas-with-fixed-port', 'memory-below-daemon-minimum', 'memswap-limit-invalid', 'shm-size-tiny', 'tmpfs-size-tiny',
     'tmpfs-mode-decimal', 'tmpfs-mode-no-sticky', 'secret-config-mode-decimal', 'merge-key-replaces-list',
     'volume-mode-unknown', 'unquoted-value-retyped', 'dns-not-an-ip', 'extra-hosts-invalid-ip',
+    'cap-unknown', 'security-opt-unknown',
   ]) {
     assert.ok(rules.has(r), `expected rule '${r}'`);
   }
@@ -3334,3 +3335,78 @@ test('extra-hosts-invalid-ip: a non-IP target is an error; host-gateway, IPv4, I
   // Anchor: the same harness clears a good one
   assert.equal(memFindings(svc('    extra_hosts:', '      goodhost: 10.0.0.9'), 'extra-hosts-invalid-ip').length, 0);
 });
+
+// --- cap-unknown ---------------------------------------------------------------
+// Measured (compose v5.3.1 / daemon 29.1.3): config accepts any string; up takes
+// the 41 Linux capabilities (CAP_ optional, any case) plus ALL, nothing else.
+
+test('cap-unknown: a typo in cap_add or cap_drop is an error with a suggestion', () => {
+  const add = memFindings(svc('    cap_add: [NET_ADMN]'), 'cap-unknown');
+  assert.equal(add.length, 1);
+  assert.equal(add[0].level, 'error');
+  assert.match(add[0].message, /`cap_add` names `NET_ADMN`/);
+  assert.match(add[0].hint, /Did you mean `NET_ADMIN`/);
+  const drop = memFindings(svc('    cap_drop: [ALL, NET_RAWW]'), 'cap-unknown');
+  assert.equal(drop.length, 1);
+  assert.match(drop[0].hint, /invalid CapDrop/);
+});
+
+test('cap-unknown: every Linux capability, CAP_ prefix, lower case and ALL pass', () => {
+  const caps = ['CHOWN', 'DAC_OVERRIDE', 'DAC_READ_SEARCH', 'FOWNER', 'FSETID', 'KILL', 'SETGID', 'SETUID',
+    'SETPCAP', 'LINUX_IMMUTABLE', 'NET_BIND_SERVICE', 'NET_BROADCAST', 'NET_ADMIN', 'NET_RAW', 'IPC_LOCK',
+    'IPC_OWNER', 'SYS_MODULE', 'SYS_RAWIO', 'SYS_CHROOT', 'SYS_PTRACE', 'SYS_PACCT', 'SYS_ADMIN', 'SYS_BOOT',
+    'SYS_NICE', 'SYS_RESOURCE', 'SYS_TIME', 'SYS_TTY_CONFIG', 'MKNOD', 'LEASE', 'AUDIT_WRITE', 'AUDIT_CONTROL',
+    'SETFCAP', 'MAC_OVERRIDE', 'MAC_ADMIN', 'SYSLOG', 'WAKE_ALARM', 'BLOCK_SUSPEND', 'AUDIT_READ', 'PERFMON',
+    'BPF', 'CHECKPOINT_RESTORE'];
+  assert.equal(caps.length, 41);
+  assert.equal(memFindings(svc(`    cap_drop: [${caps.join(', ')}]`), 'cap-unknown').length, 0);
+  assert.equal(memFindings(svc('    cap_add: [net_admin, CAP_SYS_TIME, cap_chown]', '    cap_drop: [all]'), 'cap-unknown').length, 0);
+});
+
+test('cap-unknown: CAP_ALL and a stray space or comma inside quotes are refused too', () => {
+  const f = memFindings(svc('    cap_drop: ["CAP_ALL", "NET_ADMIN ", "NET_RAW,"]'), 'cap-unknown');
+  assert.equal(f.length, 3);
+  assert.match(f[0].hint, /not `CAP_ALL`/);
+  assert.match(f[1].hint, /Did you mean `NET_ADMIN`/);
+});
+
+// --- security-opt-unknown --------------------------------------------------------
+// Measured (daemon 29.1.3): no-new-privileges bare; label/apparmor/seccomp with any
+// value; no-new-privileges / writable-cgroups take a Go bool; systempaths only
+// unconfined. Everything else passes config and is refused at up.
+
+test('security-opt-unknown: unknown keys, bad booleans and bare keys are errors', () => {
+  for (const [opt, why] of [
+    ['no_new_privileges:true', /did you mean `no-new-privileges`/],
+    ['lable=disable', /did you mean `label`/],
+    ['no-new-privileges:yes', /takes a boolean/],
+    ['no-new-privileges=', /takes a boolean/],
+    ['writable-cgroups=yes', /takes a boolean/],
+    ['systempaths=confined', /only takes `unconfined`/],
+    ['seccomp', /needs a value/],
+    ['NO-NEW-PRIVILEGES', /not one the daemon knows/],
+    ['mask=/proc/kcore', /is not a security option/],
+  ]) {
+    const f = memFindings(svc(`    security_opt: ["${opt}"]`), 'security-opt-unknown');
+    assert.equal(f.length, 1, opt);
+    assert.equal(f[0].level, 'error');
+    assert.match(f[0].message, why, opt);
+  }
+});
+
+test('security-opt-unknown: every measured-valid form passes', () => {
+  const ok = ['no-new-privileges', 'no-new-privileges:true', 'no-new-privileges=false', 'no-new-privileges=1',
+    'no-new-privileges=True', 'no-new-privileges=TRUE', 'no-new-privileges=t', 'label:disable', 'label=disable',
+    'label=type:svirt_apache_t', 'seccomp:unconfined', 'seccomp=/etc/docker/seccomp.json', 'apparmor=docker-default',
+    'apparmor:unconfined', 'systempaths=unconfined', 'writable-cgroups=true'];
+  assert.equal(memFindings(svc('    security_opt:', ...ok.map((o) => `      - "${o}"`)), 'security-opt-unknown').length, 0);
+});
+
+test('no-new-privileges: any Go-bool true spelling satisfies it, the underscore typo does not', () => {
+  for (const opt of ['no-new-privileges=1', 'no-new-privileges=True', 'no-new-privileges:TRUE', 'no-new-privileges=t']) {
+    assert.equal(memFindings(svc('    cap_add: [NET_BIND_SERVICE]', `    security_opt: ["${opt}"]`), 'no-new-privileges').length, 0, opt);
+  }
+  assert.equal(memFindings(svc('    cap_add: [NET_BIND_SERVICE]', '    security_opt: ["no_new_privileges:true"]'), 'no-new-privileges').length, 1);
+  assert.equal(memFindings(svc('    cap_add: [NET_BIND_SERVICE]', '    security_opt: ["no-new-privileges=false"]'), 'no-new-privileges').length, 1);
+});
+

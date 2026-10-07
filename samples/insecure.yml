@@ -43,8 +43,10 @@ services:
     cap_add:                         # no-new-privileges (warn) — caps without the security_opt
       - SYS_ADMIN                    # dangerous-cap (error)
       - NET_ADMIN                    # dangerous-cap (warn)
+      - SYS_PTRACEE                  # cap-unknown (error) — typo: config accepts it, the daemon refuses the container at up
     security_opt:
       - seccomp:unconfined           # security-unconfined (error) — syscall filter off
+      - no_new_privileges:true       # security-opt-unknown (error) — underscores: "invalid --security-opt" at up
     healthcheck:
       test: ["curl", "-f", "http://localhost:9100/health"]   # healthcheck-test-invalid (error) — list form needs CMD / CMD-SHELL / NONE first
       start_period: 0s               # start-interval-exceeds-start-period (warn) — a zero-length boot window: the fast cadence never runs (measured: probes at interval)
