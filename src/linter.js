@@ -632,6 +632,70 @@ function ruleSecurityOptUnknown(svc) {
   return findings;
 }
 
+// Rules 80-81: two more fields the daemon refuses at `up` after
+// `docker compose config` has accepted them (measured, compose v5.3.1 /
+// daemon 29.1.3 / runc).
+//  - ulimits: runc knows 16 resources - as core cpu data fsize locks memlock
+//    msgqueue nice nofile nproc rss rtprio rttime sigpending stack - in any
+//    case (`NOFILE` and `Nproc` start). `nofiles`, `file` or `nofile_` ->
+//    "OCI runtime create failed: wrong rlimit value: RLIMIT_NOFILES".
+//  - pid / ipc / uts take a fixed word, case-sensitive: pid `host`; ipc
+//    `host`, `private`, `shareable`, `none`; uts `host` only - plus
+//    `container:<name>` / `service:<name>` for pid and ipc, and the empty
+//    string. `hots`, `HOST`, `private` for pid, `none` for uts -> "invalid
+//    PID/IPC/UTS mode". (`cgroup` is checked by compose's own schema, and
+//    `userns_mode` took anything we tried without complaint - both left out.)
+const RLIMITS = new Set(["as", "core", "cpu", "data", "fsize", "locks", "memlock", "msgqueue",
+  "nice", "nofile", "nproc", "rss", "rtprio", "rttime", "sigpending", "stack"]);
+
+function ruleUlimitUnknown(svc) {
+  const findings = [];
+  for (const u of svc.ulimits || []) {
+    const name = String(u.name);
+    if (RLIMITS.has(name.toLowerCase()) || name.includes("${")) continue;
+    let near = null;
+    let bestD = 3;
+    for (const r of RLIMITS) {
+      const dist = editDistance(name.toLowerCase(), r);
+      if (dist < bestD) { near = r; bestD = dist; }
+    }
+    findings.push({
+      level: "error",
+      rule: "ulimit-unknown",
+      message: `\`ulimits.${name}\` is not a resource limit — the container fails to start at \`up\`.`,
+      hint: `Measured: \`docker compose config\` accepts it, then runc refuses the container ("wrong rlimit value: RLIMIT_${name.toUpperCase()}"). ${near ? `Did you mean \`${near}\`? ` : ""}Valid names (any case): ${[...RLIMITS].join(", ")}.`,
+    });
+  }
+  return findings;
+}
+
+const NAMESPACE_MODES = {
+  pid: { words: ["host"], joins: true, label: "PID" },
+  ipc: { words: ["host", "private", "shareable", "none"], joins: true, label: "IPC" },
+  uts: { words: ["host"], joins: false, label: "UTS" },
+};
+
+function ruleNamespaceModeInvalid(svc) {
+  const findings = [];
+  for (const [field, value] of [["pid", svc.pidMode], ["ipc", svc.ipcMode], ["uts", svc.utsMode]]) {
+    if (value === null || value === undefined || value === "" || String(value).includes("${")) continue;
+    const spec = NAMESPACE_MODES[field];
+    const v = String(value);
+    if (spec.words.includes(v)) continue;
+    if (spec.joins && /^(container|service):.+/.test(v)) continue;
+    const lower = v.toLowerCase();
+    const near = spec.words.includes(lower) ? lower : spec.words.find((w) => editDistance(lower, w) <= 2);
+    const forms = spec.words.map((w) => `\`${w}\``).join(", ") + (spec.joins ? ", `container:<name>` or `service:<name>`" : "");
+    findings.push({
+      level: "error",
+      rule: "namespace-mode-invalid",
+      message: `\`${field}: ${v}\` is not a ${spec.label} mode — the daemon refuses the container at \`up\`.`,
+      hint: `Measured: \`docker compose config\` accepts it, then \`up\` fails with "invalid ${spec.label} mode: ${v}". \`${field}\` takes ${forms} — case-sensitive${near ? `; did you mean \`${near}\`?` : ""}${field === "uts" && lower !== "host" ? " (`uts` has no private/none form: leave it out for the default)" : ""}.`,
+    });
+  }
+  return findings;
+}
+
 function ruleExtraHostsInvalidIp(svc) {
   const out = [];
   for (const { host, ip } of svc.extraHosts || []) {
@@ -2276,6 +2340,8 @@ const RULES = [
   ruleExtraHostsInvalidIp,
   ruleCapUnknown,
   ruleSecurityOptUnknown,
+  ruleUlimitUnknown,
+  ruleNamespaceModeInvalid,
   ruleUlimitSoftExceedsHard,
   ruleZeroLimitIsUnlimited,
   ruleOomKillDisable,

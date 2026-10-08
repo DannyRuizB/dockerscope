@@ -700,7 +700,7 @@ test('the insecure sample trips every security rule at once', () => {
     'replicas-with-fixed-port', 'memory-below-daemon-minimum', 'memswap-limit-invalid', 'shm-size-tiny', 'tmpfs-size-tiny',
     'tmpfs-mode-decimal', 'tmpfs-mode-no-sticky', 'secret-config-mode-decimal', 'merge-key-replaces-list',
     'volume-mode-unknown', 'unquoted-value-retyped', 'dns-not-an-ip', 'extra-hosts-invalid-ip',
-    'cap-unknown', 'security-opt-unknown',
+    'cap-unknown', 'security-opt-unknown', 'ulimit-unknown', 'namespace-mode-invalid',
   ]) {
     assert.ok(rules.has(r), `expected rule '${r}'`);
   }
@@ -3410,3 +3410,57 @@ test('no-new-privileges: any Go-bool true spelling satisfies it, the underscore 
   assert.equal(memFindings(svc('    cap_add: [NET_BIND_SERVICE]', '    security_opt: ["no-new-privileges=false"]'), 'no-new-privileges').length, 1);
 });
 
+
+// --- ulimit-unknown ----------------------------------------------------------------
+// Measured (compose v5.3.1 / daemon 29.1.3 / runc): config accepts any name; runc
+// knows 16 resources, any case, and refuses the rest ("wrong rlimit value").
+
+test('ulimit-unknown: a misspelt resource is an error with a suggestion', () => {
+  const f = memFindings(svc('    ulimits:', '      nofiles: 1024'), 'ulimit-unknown');
+  assert.equal(f.length, 1);
+  assert.equal(f[0].level, 'error');
+  assert.match(f[0].hint, /RLIMIT_NOFILES/);
+  assert.match(f[0].hint, /Did you mean `nofile`/);
+  for (const bad of ['file', 'nofile_', 'open_files']) {
+    assert.equal(memFindings(svc('    ulimits:', `      ${bad}: 64`), 'ulimit-unknown').length, 1, bad);
+  }
+});
+
+test('ulimit-unknown: every resource runc knows passes, in any case and in both forms', () => {
+  const names = ['as', 'core', 'cpu', 'data', 'fsize', 'locks', 'memlock', 'msgqueue', 'nice', 'nofile', 'nproc', 'rss', 'rtprio', 'rttime', 'sigpending', 'stack'];
+  assert.equal(memFindings(svc('    ulimits:', ...names.map((n) => `      ${n}: 64`)), 'ulimit-unknown').length, 0);
+  assert.equal(memFindings(svc('    ulimits:', '      NOFILE: {soft: 1024, hard: 2048}', '      Nproc: 512'), 'ulimit-unknown').length, 0);
+  // Anchor: the same harness flags one bad name among good ones
+  assert.equal(memFindings(svc('    ulimits:', '      nofile: 1024', '      nprocs: 512'), 'ulimit-unknown').length, 1);
+});
+
+// --- namespace-mode-invalid ----------------------------------------------------------
+// Measured: config accepts any string; up refuses anything but the fixed,
+// case-sensitive words (pid host; ipc host/private/shareable/none; uts host)
+// and the container:/service: join forms of pid and ipc.
+
+test('namespace-mode-invalid: typos, upper case and words of another field are errors', () => {
+  const cases = { 'pid: hots': /did you mean `host`/, 'pid: HOST': /case-sensitive; did you mean `host`/, 'pid: private': /PID mode/,
+    'ipc: hots': /IPC mode/, 'ipc: HOST': /did you mean `host`/, 'uts: private': /no private\/none form/, 'uts: none': /UTS mode/ };
+  for (const [line, re] of Object.entries(cases)) {
+    const f = memFindings(svc(`    ${line}`), 'namespace-mode-invalid');
+    assert.equal(f.length, 1, line);
+    assert.equal(f[0].level, 'error');
+    assert.match(f[0].hint, re, line);
+  }
+});
+
+test('namespace-mode-invalid: every measured-valid mode passes', () => {
+  for (const line of ['pid: host', 'pid: "container:db"', 'pid: "service:db"', 'pid: ""', 'ipc: host', 'ipc: private', 'ipc: shareable',
+    'ipc: none', 'ipc: "container:db"', 'ipc: "service:db"', 'uts: host', 'pid: "${PID_MODE}"']) {
+    assert.equal(memFindings(svc(`    ${line}`, '  db:', '    image: busybox'), 'namespace-mode-invalid').length, 0, line);
+  }
+  // uts has no join form
+  assert.equal(memFindings(svc('    uts: "container:db"'), 'namespace-mode-invalid').length, 1);
+});
+
+test('ulimit-unknown / namespace-mode-invalid: insecure.yml raises each exactly once', () => {
+  const { findings } = DS.lint(DS.parseCompose(require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'samples', 'insecure.yml'), 'utf8')));
+  assert.equal(findings.filter((f) => f.rule === 'ulimit-unknown').length, 1);
+  assert.equal(findings.filter((f) => f.rule === 'namespace-mode-invalid').length, 1);
+});

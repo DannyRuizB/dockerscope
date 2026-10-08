@@ -40,6 +40,9 @@ services:
     ports:
       - "9100:9100"                  # ports-with-host-network (warn) — silently discarded under host networking
     pid: host                        # host-namespace
+    uts: private                     # namespace-mode-invalid (error) — uts takes only `host`: "invalid UTS mode" at up
+    ulimits:
+      nofiles: 65536                 # ulimit-unknown (error) — it is `nofile`: runc "wrong rlimit value: RLIMIT_NOFILES" at up
     cap_add:                         # no-new-privileges (warn) — caps without the security_opt
       - SYS_ADMIN                    # dangerous-cap (error)
       - NET_ADMIN                    # dangerous-cap (warn)
