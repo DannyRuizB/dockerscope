@@ -163,7 +163,7 @@ Pure HTML + CSS + vanilla JS. No build step, no bundler, no backend.
 
 - [`js-yaml`](https://github.com/nodeca/js-yaml) — YAML parsing.
 - [`Cytoscape.js`](https://js.cytoscape.org/) + [`cytoscape-fcose`](https://github.com/iVis-at-Bilkent/cytoscape.js-fcose) — graph rendering and force-directed layout with compound-node support (so networks can wrap their services).
-- [`cytoscape-svg`](https://github.com/kaluginserg/cytoscape-svg) — SVG export.
+- [`cytoscape-svg`](https://github.com/kinimesi/cytoscape-svg) — SVG export.
 
 All loaded from CDN; no `npm install` required to run the app.
 
