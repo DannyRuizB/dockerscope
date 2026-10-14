@@ -3464,3 +3464,63 @@ test('ulimit-unknown / namespace-mode-invalid: insecure.yml raises each exactly 
   assert.equal(findings.filter((f) => f.rule === 'ulimit-unknown').length, 1);
   assert.equal(findings.filter((f) => f.rule === 'namespace-mode-invalid').length, 1);
 });
+
+// --- v0.64: hardening the linter itself missed --------------------------------------
+// Measured (daemon 29.8.2 / compose v5.6.0): systempaths=unconfined drops every /proc
+// and /sys mask; cap_bpf lands in CapEff; and
+// uts: host + SYS_ADMIN let `hostname x` inside the container rename the host.
+
+test('dangerous-cap: lower and mixed case are the same capability (the parser upper-cases; regression anchor)', () => {
+  for (const cap of ['sys_admin', 'Sys_Admin', 'cap_sys_admin', 'CAP_SYS_ADMIN', 'all']) {
+    const f = memFindings(svc(`    cap_add: ["${cap}"]`), 'dangerous-cap');
+    assert.equal(f.length, 1, cap);
+    assert.equal(f[0].level, 'error', cap);
+  }
+  assert.equal(memFindings(svc('    cap_add: [net_admin]'), 'dangerous-cap')[0].level, 'warn');
+  // Anchor: a harmless cap in lower case stays silent
+  assert.equal(memFindings(svc('    cap_add: [chown, cap_net_bind_service]'), 'dangerous-cap').length, 0);
+});
+
+test('dangerous-cap: BPF, PERFMON, MAC_ADMIN and MAC_OVERRIDE are flagged', () => {
+  for (const cap of ['BPF', 'cap_bpf', 'PERFMON', 'MAC_ADMIN', 'MAC_OVERRIDE']) {
+    assert.equal(memFindings(svc(`    cap_add: ["${cap}"]`), 'dangerous-cap').length, 1, cap);
+  }
+});
+
+test('no-cap-drop: cap_drop [all] in lower case clears it (measured: CapEff 0; regression anchor)', () => {
+  for (const drop of ['all', 'All', 'cap_all']) {
+    assert.equal(memFindings(svc(`    cap_drop: ["${drop}"]`), 'no-cap-drop').length, 0, drop);
+  }
+  assert.equal(memFindings(svc('    cap_drop: [net_raw]'), 'no-cap-drop').length, 1);
+});
+
+test('security-unconfined: systempaths=unconfined is an error, in both spellings', () => {
+  for (const opt of ['systempaths=unconfined', 'systempaths:unconfined']) {
+    const f = memFindings(svc('    security_opt:', `      - ${opt}`), 'security-unconfined');
+    assert.equal(f.length, 1, opt);
+    assert.equal(f[0].level, 'error');
+    assert.match(f[0].message, /unmasks/);
+  }
+  // seccomp/apparmor keep their own message
+  assert.match(memFindings(svc('    security_opt: ["seccomp=unconfined"]'), 'security-unconfined')[0].message, /seccomp profile/);
+});
+
+test('host-namespace: uts: host is flagged, and the hint escalates with SYS_ADMIN or privileged', () => {
+  const plain = memFindings(svc('    uts: host'), 'host-namespace');
+  assert.equal(plain.length, 1);
+  assert.match(plain[0].message, /uts: host/);
+  assert.match(plain[0].hint, /any later SYS_ADMIN/);
+  for (const extra of ['    cap_add: [sys_admin]', '    privileged: true', '    cap_add: [ALL]']) {
+    assert.match(memFindings(svc('    uts: host', extra), 'host-namespace')[0].hint, /can rename the host/, extra);
+  }
+  // Anchor: no uts, no finding
+  assert.equal(memFindings(svc('    cap_add: [SYS_ADMIN]'), 'host-namespace').length, 0);
+});
+
+test('v0.64: insecure.yml proxy trips each new case', () => {
+  const { findings } = DS.lint(DS.parseCompose(require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'samples', 'insecure.yml'), 'utf8')));
+  const proxy = findings.filter((f) => f.service === 'proxy');
+  assert.ok(proxy.some((f) => f.rule === 'host-namespace' && /uts: host/.test(f.message) && /can rename the host/.test(f.hint)));
+  assert.ok(proxy.some((f) => f.rule === 'dangerous-cap' && f.level === 'error'));
+  assert.ok(proxy.some((f) => f.rule === 'security-unconfined' && /unmasks/.test(f.message)));
+});

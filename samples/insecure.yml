@@ -24,6 +24,10 @@ services:
         condition: service_healthy   # service-healthy-no-healthcheck (error) — app reports no health, this never starts
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock   # docker-socket-mount (error)
+    uts: host                        # host-namespace (warn) — shares the host's hostname
+    cap_add: [SYS_ADMIN]             # dangerous-cap (error) — and with uts: host it can rename the host (measured)
+    security_opt:
+      - systempaths=unconfined       # security-unconfined (error) — unmasks /proc/keys, /proc/timer_list, /sys/firmware; /proc/sys no longer read-only (measured)
     ports:
       - "80:80"                        # replicas-with-fixed-port (error) — one host port, two replicas
 

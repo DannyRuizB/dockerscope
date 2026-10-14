@@ -1062,14 +1062,21 @@ function ruleHostNamespace(svc) {
     ["network_mode", svc.networkMode],
     ["pid", svc.pidMode],
     ["ipc", svc.ipcMode],
+    ["uts", svc.utsMode],
   ];
   for (const [field, value] of ns) {
     if (value !== "host") continue;
+    // `uts: host` shares the hostname. Measured (daemon 29.8.2): with
+    // SYS_ADMIN (or privileged) `hostname x` inside the container renamed the
+    // host itself.
+    const utsRoot = field === "uts" && (svc.privileged === true || svc.capAdd.some((c) => ["SYS_ADMIN", "ALL"].includes(c.replace(/^CAP_/, ""))));
     findings.push({
       level: "warn",
       rule: "host-namespace",
       message: `uses \`${field}: host\` — shares the host's ${field === "network_mode" ? "network" : field} namespace.`,
-      hint: "Prefer the default isolated namespace; publish only the ports you need instead of sharing the host stack.",
+      hint: field === "uts"
+        ? `The container sees the host's hostname${utsRoot ? " and, with SYS_ADMIN/privileged, can rename the host (measured: `hostname x` inside changed the host's name)" : ", and any later SYS_ADMIN would let it rename the host"}. Leave \`uts\` out unless the service really must report the host's name.`
+        : "Prefer the default isolated namespace; publish only the ports you need instead of sharing the host stack.",
     });
   }
   return findings;
@@ -1347,9 +1354,14 @@ function ruleSysctlInHostNamespace(svc) {
 }
 
 // Capabilities that, added back, largely defeat the point of dropping root.
+// BPF / PERFMON load eBPF programs and open perf events - kernel memory and
+// every process on the host within reach; MAC_ADMIN / MAC_OVERRIDE are the
+// keys to AppArmor/SELinux themselves (measured, daemon 29.8.2: `cap_bpf`
+// lands in CapEff like any other).
 const DANGEROUS_CAPS = new Set([
   "SYS_ADMIN", "NET_ADMIN", "SYS_PTRACE", "SYS_MODULE",
-  "SYS_RAWIO", "DAC_READ_SEARCH", "ALL",
+  "SYS_RAWIO", "DAC_READ_SEARCH", "BPF", "PERFMON",
+  "MAC_ADMIN", "MAC_OVERRIDE", "ALL",
 ]);
 function ruleDangerousCaps(svc) {
   const findings = [];
@@ -1526,17 +1538,27 @@ function ruleNoNewPrivileges(svc) {
 // off wholesale. Almost every container-escape exploit chain assumes at least
 // one of them is disabled — legitimate needs are served by a *custom* profile,
 // not by none.
-const UNCONFINED_PATTERN = /^(seccomp|apparmor)[:=]unconfined$/;
+// `systempaths=unconfined` is the third switch of the same kind: it removes
+// the masks over /proc and /sys. Measured (daemon 29.8.2): by default /proc/acpi,
+// /proc/keys, /proc/interrupts, /proc/timer_list and /sys/firmware are masked and
+// /proc/sys, /proc/bus, /proc/fs, /proc/irq are remounted read-only; with the
+// option every one of those mounts is gone (/proc/timer_list became readable).
+const UNCONFINED_PATTERN = /^(seccomp|apparmor|systempaths)[:=]unconfined$/;
 function ruleSecurityUnconfined(svc) {
   const findings = [];
   for (const opt of svc.securityOpt) {
     const m = String(opt).trim().match(UNCONFINED_PATTERN);
     if (!m) continue;
+    const paths = m[1] === "systempaths";
     findings.push({
       level: "error",
       rule: "security-unconfined",
-      message: `disables the ${m[1]} profile (\`${String(opt).trim()}\`).`,
-      hint: `Most container escapes assume ${m[1]} is off. If the default profile blocks a syscall the service needs, ship a custom profile that allows just that one instead of \`unconfined\`.`,
+      message: paths
+        ? `unmasks the kernel's /proc and /sys paths (\`${String(opt).trim()}\`).`
+        : `disables the ${m[1]} profile (\`${String(opt).trim()}\`).`,
+      hint: paths
+        ? "Docker masks /proc/keys, /proc/timer_list, /sys/firmware and friends and keeps /proc/sys read-only because they leak host state or let a container tune the host kernel. If one path is really needed, bind just that one in read-only instead of dropping every mask."
+        : `Most container escapes assume ${m[1]} is off. If the default profile blocks a syscall the service needs, ship a custom profile that allows just that one instead of \`unconfined\`.`,
     });
   }
   return findings;
