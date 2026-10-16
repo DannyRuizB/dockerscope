@@ -3524,3 +3524,111 @@ test('v0.64: insecure.yml proxy trips each new case', () => {
   assert.ok(proxy.some((f) => f.rule === 'dangerous-cap' && f.level === 'error'));
   assert.ok(proxy.some((f) => f.rule === 'security-unconfined' && /unmasks/.test(f.message)));
 });
+
+// --- v0.65: restart and stop_signal, judged by the daemon ---------------------------
+// Measured (compose v5.3.1 / daemon 29.1.3 / runc): `config` accepts any string for
+// both; the daemon refuses an unknown restart policy or signal name at `up`, drops a
+// non-numeric on-failure count (no cap: 8 restarts in 20 s next to on-failure:2's 2),
+// and starts a numeric stop_signal outside 1-64 that runc can never deliver (every
+// stop is a SIGKILL, exit 137, `docker stop` rc 0).
+
+test('restart-policy-unknown: the four lower-case policies and a numeric on-failure count pass', () => {
+  for (const r of ['no', '"no"', 'always', 'unless-stopped', 'on-failure', 'on-failure:5', 'on-failure:0', '"${RESTART:-always}"']) {
+    assert.equal(memFindings(svc(`    restart: ${r}`), 'restart-policy-unknown').length, 0, r);
+  }
+});
+
+test('restart-policy-unknown: an unknown word is an error that names the fix', () => {
+  for (const [r, fix] of [['on_failure', 'on-failure'], ['unless_stopped', 'unless-stopped'], ['Always', 'always'],
+    ['ON-FAILURE', 'on-failure'], ['onfailure', 'on-failure'], ['never', 'no'], ['on_failure:3', 'on-failure:3']]) {
+    const f = memFindings(svc(`    restart: ${r}`), 'restart-policy-unknown');
+    assert.equal(f.length, 1, r);
+    assert.equal(f[0].level, 'error', r);
+    assert.match(f[0].message, /is not a restart policy: the daemon refuses the container at `up`/, r);
+    assert.match(f[0].hint, new RegExp(`Write \`restart: ${fix}\``), r);
+  }
+  assert.doesNotMatch(memFindings(svc('    restart: sometimes'), 'restart-policy-unknown')[0].hint, /Write/);
+  // One message, not two: a mistyped policy is not also "no restart policy set".
+  assert.equal(memFindings(svc('    restart: on_failure'), 'no-restart').length, 0);
+});
+
+test('restart-policy-unknown: a count on the wrong policy or a negative one is an error', () => {
+  for (const r of ['always:3', 'unless-stopped:2', '"no:3"']) {
+    const f = memFindings(svc(`    restart: ${r}`), 'restart-policy-unknown');
+    assert.equal(f[0].level, 'error', r);
+    assert.match(f[0].message, /can only be used with 'on-failure'/, r);
+  }
+  assert.match(memFindings(svc('    restart: on-failure:-1'), 'restart-policy-unknown')[0].message, /cannot be negative/);
+});
+
+test('restart-policy-unknown: a non-numeric on-failure count is dropped - warn, no cap', () => {
+  for (const r of ['on-failure:two', 'on-failure:5:1', '"on-failure:"']) {
+    const f = memFindings(svc(`    restart: ${r}`), 'restart-policy-unknown');
+    assert.equal(f.length, 1, r);
+    assert.equal(f[0].level, 'warn', r);
+    assert.match(f[0].message, /silently DROPPED: the container gets on-failure with no cap/, r);
+  }
+  assert.match(memFindings(svc('    restart: "on-failure:"'), 'restart-policy-unknown')[0].message, /the count after the colon is empty/);
+});
+
+test('stop-signal-invalid: every name the daemon took, in both spellings, and 1-64 pass', () => {
+  const names = ['ABRT', 'ALRM', 'BUS', 'CHLD', 'CLD', 'CONT', 'FPE', 'HUP', 'ILL', 'INT', 'IO', 'IOT', 'KILL', 'PIPE',
+    'POLL', 'PROF', 'PWR', 'QUIT', 'SEGV', 'STKFLT', 'STOP', 'SYS', 'TERM', 'TRAP', 'TSTP', 'TTIN', 'TTOU', 'URG', 'USR1',
+    'USR2', 'VTALRM', 'WINCH', 'XCPU', 'XFSZ', 'RTMIN', 'RTMAX', 'RTMIN+1', 'RTMIN+15', 'RTMAX-1', 'RTMAX-14'];
+  for (const n of names) {
+    assert.equal(memFindings(svc(`    stop_signal: SIG${n}`), 'stop-signal-invalid').length, 0, n);
+    assert.equal(memFindings(svc(`    stop_signal: ${n.toLowerCase()}`), 'stop-signal-invalid').length, 0, n.toLowerCase());
+  }
+  for (const v of ['"1"', '"15"', '"64"', '"${STOP_SIGNAL}"']) {
+    assert.equal(memFindings(svc(`    stop_signal: ${v}`), 'stop-signal-invalid').length, 0, v);
+  }
+});
+
+test('stop-signal-invalid: an unknown name or 0 is an error at up', () => {
+  const f = memFindings(svc('    stop_signal: SIGTREM'), 'stop-signal-invalid');
+  assert.equal(f.length, 1);
+  assert.equal(f[0].level, 'error');
+  assert.match(f[0].message, /invalid signal: SIGTREM/);
+  assert.match(f[0].hint, /Did you mean `SIGTERM`\?/);
+  for (const v of ['SIGKILLL', 'SIGINFO', 'SIGEMT', 'SIGUNUSED', 'SIGRTMIN+16', 'SIGRTMAX-15', '"0"']) {
+    const g = memFindings(svc(`    stop_signal: ${v}`), 'stop-signal-invalid');
+    assert.equal(g.length, 1, v);
+    assert.equal(g[0].level, 'error', v);
+  }
+  assert.match(memFindings(svc('    stop_signal: SIGINFO'), 'stop-signal-invalid')[0].hint, /^Linux has no SIGINFO \(it is BSD\/macOS\)\. Names/);
+  assert.doesNotMatch(memFindings(svc('    stop_signal: SIGRTMIN+16'), 'stop-signal-invalid')[0].hint, /Did you mean/);
+});
+
+test('stop-signal-invalid: a number outside 1-64 starts, and every stop is a SIGKILL - warn', () => {
+  const above = memFindings(svc('    stop_signal: "99"'), 'stop-signal-invalid');
+  assert.equal(above.length, 1);
+  assert.equal(above[0].level, 'warn');
+  assert.match(above[0].message, /EVERY stop ends in SIGKILL, exit 137 — after 2 s, whatever stop_grace_period says/);
+  assert.match(memFindings(svc('    stop_signal: "-1"'), 'stop-signal-invalid')[0].message, /after the whole grace period/);
+  assert.equal(memFindings(svc('    stop_signal: "65"'), 'stop-signal-invalid').length, 1);
+  // SIGKILL is a real signal: that is stop-signal-uncatchable's verdict, not this one.
+  assert.equal(memFindings(svc('    stop_signal: SIGKILL'), 'stop-signal-invalid').length, 0);
+});
+
+test('v0.65: insecure.yml worker trips both, each exactly once', () => {
+  const { findings } = DS.lint(DS.parseCompose(sample('insecure.yml')));
+  for (const rule of ['restart-policy-unknown', 'stop-signal-invalid']) {
+    const f = findings.filter((x) => x.rule === rule);
+    assert.equal(f.length, 1, rule);
+    assert.equal(f[0].service, 'worker', rule);
+  }
+});
+
+// The README's rule table is the user-facing catalogue: every rule the linter can
+// emit needs a row there, and a row must not name a rule that does not exist.
+test('every lint rule has a row in the README rule table, and every row is a rule', () => {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const root = path.join(__dirname, '..');
+  const ids = new Set([...fs.readFileSync(path.join(root, 'src', 'linter.js'), 'utf8').matchAll(/rule: "([a-z0-9-]+)"/g)].map((m) => m[1]));
+  const rows = fs.readFileSync(path.join(root, 'README.md'), 'utf8').split('\n').filter((l) => l.startsWith('| `'));
+  const named = new Set(rows.flatMap((l) => [...l.split('|')[1].matchAll(/`([a-z0-9-]+)`/g)].map((m) => m[1])));
+  assert.ok(ids.size > 80);
+  assert.deepEqual([...ids].filter((id) => !named.has(id)), [], 'rules with no README row');
+  assert.deepEqual([...named].filter((id) => !ids.has(id)), [], 'README rows naming no rule');
+});
