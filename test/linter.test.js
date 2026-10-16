@@ -3632,3 +3632,73 @@ test('every lint rule has a row in the README rule table, and every row is a rul
   assert.deepEqual([...ids].filter((id) => !named.has(id)), [], 'rules with no README row');
   assert.deepEqual([...named].filter((id) => !ids.has(id)), [], 'README rows naming no rule');
 });
+
+// --- v0.66: the logging block, judged by the daemon ------------------------------
+// Measured (compose v5.3.1 / daemon 29.1.3, default driver json-file): `config`
+// accepts any driver and option; `up` looks an unknown driver up as a plugin
+// ("not found") and refuses unknown or malformed options.
+
+const logSvc = (...lines) => ['services:', '  app:', '    image: busybox', '    logging:', ...lines.map((l) => `      ${l}`)].join('\n');
+
+test('log-driver-unknown: near-misses of a built-in are errors, real names and plugins are not', () => {
+  for (const [d, fix] of [['jsonfile', 'json-file'], ['json_file', 'json-file'], ['json', 'json-file'], ['JSON-FILE', 'json-file'],
+    ['journal', 'journald'], ['sys-log', 'syslog'], ['lcoal', 'local']]) {
+    const f = memFindings(logSvc(`driver: ${d}`), 'log-driver-unknown');
+    assert.equal(f.length, 1, d);
+    assert.equal(f[0].level, 'error', d);
+    assert.match(f[0].message, /looks it up as a plugin and refuses the container at `up`/, d);
+    assert.match(f[0].hint, new RegExp(`Did you mean \`${fix}\``), d);
+  }
+  for (const d of ['json-file', 'local', 'none', 'syslog', 'journald', 'gelf', 'fluentd', 'loki', 'grafana/loki-docker-driver:latest', '"${LOG_DRIVER}"']) {
+    assert.equal(memFindings(logSvc(`driver: ${d}`), 'log-driver-unknown').length, 0, d);
+  }
+});
+
+test('log-opt-invalid: every measured option of json-file and local passes', () => {
+  const good = ['options:', '  max-size: "10m"', '  max-file: "3"', '  compress: "true"', '  labels: "a"', '  labels-regex: "^a"',
+    '  env: "A"', '  env-regex: "^A"', '  tag: "x"', '  mode: non-blocking', '  max-buffer-size: 4m'];
+  assert.equal(memFindings(logSvc('driver: json-file', ...good), 'log-opt-invalid').length, 0);
+  assert.equal(memFindings(logSvc('driver: local', 'options:', '  max-size: "10m"', '  max-file: "3"', '  compress: "false"',
+    '  mode: non-blocking', '  max-buffer-size: 4m'), 'log-opt-invalid').length, 0);
+  assert.equal(memFindings(logSvc('driver: local', 'options:', '  compress: "true"'), 'log-opt-invalid').length, 0, 'local rotates by default');
+  for (const size of ['"10mb"', '"10MB"', '"10 m"', '"1.5g"', '"${LOG_SIZE}"']) {
+    assert.equal(memFindings(logSvc('driver: json-file', 'options:', `  max-size: ${size}`, '  max-file: "3"'), 'log-opt-invalid').length, 0, size);
+  }
+  assert.equal(memFindings(logSvc('driver: syslog', 'options:', '  tag: "x"'), 'log-opt-invalid').length, 0, 'other drivers are not judged');
+});
+
+test('log-opt-invalid: unknown names, with the fix - and on the default driver too', () => {
+  const f = memFindings(logSvc('options:', '  max_size: "10m"'), 'log-opt-invalid');
+  assert.equal(f.length, 1);
+  assert.match(f[0].message, /not an option of the default json-file driver/);
+  assert.match(f[0].hint, /Did you mean `max-size`\?/);
+  // One message, not two: the misspelled max-size is not also "no max-size".
+  assert.equal(memFindings(logSvc('options:', '  max_size: "10m"'), 'no-log-limit').length, 0);
+  assert.equal(memFindings(logSvc('driver: json-file', 'options:', '  max-size: "10m"', '  max-files: "3"'), 'log-rotation-keeps-one-file').length, 0);
+  assert.match(memFindings(logSvc('driver: json-file', 'options:', '  maxsize: "10m"'), 'log-opt-invalid')[0].hint, /`max-size`/);
+  const local = memFindings(logSvc('driver: local', 'options:', '  tag: "x"'), 'log-opt-invalid');
+  assert.equal(local.length, 1);
+  assert.match(local[0].hint, /`tag` exists for json-file, not for local/);
+});
+
+test('log-opt-invalid: values the daemon refuses', () => {
+  const one = (...opts) => memFindings(logSvc('driver: json-file', 'options:', ...opts.map((o) => `  ${o}`)), 'log-opt-invalid');
+  assert.match(one('compress: "true"')[0].message, /needs both `max-size` and `max-file` of at least 2/);
+  assert.equal(one('compress: "true"', 'max-file: "2"').length, 1, 'no max-size');
+  assert.equal(one('compress: "true"', 'max-size: "10m"').length, 1, 'max-file defaults to 1');
+  assert.equal(one('compress: "true"', 'max-size: "10m"', 'max-file: "2"').length, 0);
+  assert.match(one('compress: "yes"', 'max-size: "10m"', 'max-file: "3"')[0].message, /not a boolean/);
+  assert.match(one('mode: nonblocking')[0].message, /not a logging mode/);
+  assert.match(one('max-buffer-size: 4m')[0].message, /without `mode: non-blocking`/);
+  for (const n of ['"0"', '"-1"', '"three"']) assert.match(one('max-size: "10m"', `max-file: ${n}`)[0].message, /not a file count/, n);
+  for (const sz of ['"ten"', '"-1"']) assert.match(one(`max-size: ${sz}`)[0].message, /not a size/, sz);
+});
+
+test('v0.66: insecure.yml trips both logging rules, once each, where the comments say', () => {
+  const { findings } = DS.lint(DS.parseCompose(sample('insecure.yml')));
+  const drv = findings.filter((x) => x.rule === 'log-driver-unknown');
+  const opt = findings.filter((x) => x.rule === 'log-opt-invalid');
+  // Array.from: the findings come from the vm sandbox, another realm.
+  assert.deepEqual(Array.from(drv, (x) => x.service), ['cron']);
+  assert.deepEqual(Array.from(opt, (x) => x.service), ['metrics']);
+});

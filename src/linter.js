@@ -1019,6 +1019,129 @@ function ruleNoPidsLimit(svc) {
   }];
 }
 
+// The logging block is handed to the daemon untouched: `docker compose config`
+// accepts any driver name and any option, and `up` is where they are judged.
+// MEASURED (compose v5.3.1 / daemon 29.1.3, default driver json-file):
+//   - a driver name the daemon does not have is looked up as a PLUGIN and
+//     fails: `jsonfile`, `json_file`, `json`, `Json-File`, `JSON-FILE`,
+//     `journal`, `sys-log`, `lcoal` -> "error looking up logging plugin …:
+//     plugin not found". Only near-misses of a built-in are called typos -
+//     a name far from all of them may be a real plugin (loki, …).
+//   - json-file takes max-size, max-file, compress, labels, labels-regex,
+//     env, env-regex, tag, mode and max-buffer-size; local takes max-size,
+//     max-file, compress, mode and max-buffer-size (tag, labels and env are
+//     "unknown log opt … for log driver local"). Anything else - `max_size`,
+//     `maxsize`, `max-files` - is "unknown log opt".
+//   - values: `compress` is a Go bool (`yes` -> ParseBool error); json-file
+//     compresses only with max-size set AND max-file >= 2 ("compress cannot
+//     be true when max-file is less than 2 or max-size is not set" - local
+//     has its own defaults and took `compress: "true"` alone); `mode` is
+//     blocking or non-blocking (`nonblocking` refused); `max-buffer-size`
+//     needs mode non-blocking; `max-file` must be an integer >= 1 (`0`, `-1`,
+//     `three` refused, on local `0` too); `max-size` must be a size (`ten`,
+//     `-1` refused; `10m`, `10mb`, `10MB`, `10 m` all start).
+const BUILTIN_LOG_DRIVERS = ["json-file", "local", "none", "syslog", "journald", "gelf", "fluentd", "awslogs", "splunk", "gcplogs", "etwlogs"];
+const LOG_OPTS = {
+  "json-file": ["max-size", "max-file", "compress", "labels", "labels-regex", "env", "env-regex", "tag", "mode", "max-buffer-size"],
+  local: ["max-size", "max-file", "compress", "mode", "max-buffer-size"],
+};
+
+function logDriverTypoOf(name) {
+  const folded = name.toLowerCase().replace(/_/g, "-");
+  if (BUILTIN_LOG_DRIVERS.includes(name)) return null;
+  if (BUILTIN_LOG_DRIVERS.includes(folded)) return folded;
+  const prefixOf = BUILTIN_LOG_DRIVERS.find((d) => folded.length >= 4 && d.startsWith(folded));
+  if (prefixOf) return prefixOf;
+  let best = null;
+  let bestD = 3;
+  for (const d of BUILTIN_LOG_DRIVERS) {
+    const dist = editDistance(folded.replace(/-/g, ""), d.replace(/-/g, ""));
+    if (dist < bestD) { best = d; bestD = dist; }
+  }
+  return best;
+}
+
+function ruleLogDriverUnknown(svc) {
+  const d = svc.logDriver;
+  if (typeof d !== "string" || !d.trim() || d.includes("${") || /[/:]/.test(d)) return [];
+  const near = logDriverTypoOf(d.trim());
+  if (!near) return [];
+  return [{
+    level: "error",
+    rule: "log-driver-unknown",
+    message: `\`logging.driver: ${d}\` is not a logging driver — the daemon looks it up as a plugin and refuses the container at \`up\` ("plugin \\"${d}\\" not found"); \`docker compose config\` said nothing (measured).`,
+    hint: `Did you mean \`${near}\`? Built-in driver names are lower case, with a hyphen where there is one (\`json-file\`).`,
+  }];
+}
+
+function nearestLogOpt(key, known) {
+  const folded = key.toLowerCase().replace(/_/g, "-");
+  if (known.includes(folded)) return folded;
+  let best = null;
+  let bestD = 3;
+  for (const k of known) {
+    const dist = editDistance(folded.replace(/-/g, ""), k.replace(/-/g, ""));
+    if (dist < bestD) { best = k; bestD = dist; }
+  }
+  return best;
+}
+
+function ruleLogOptInvalid(svc) {
+  const opts = svc.logOptions;
+  if (!opts) return [];
+  const driver = svc.logDriver == null ? "json-file" : String(svc.logDriver).trim();
+  const known = LOG_OPTS[driver];
+  if (!known) return [];
+  const which = svc.logDriver == null ? "the default json-file driver" : `the ${driver} driver`;
+  const findings = [];
+  const add = (message, hint) => findings.push({ level: "error", rule: "log-opt-invalid", message, hint });
+  const val = (k) => (opts[k] == null ? null : String(opts[k]).trim());
+  for (const key of Object.keys(opts)) {
+    if (known.includes(key)) continue;
+    const near = nearestLogOpt(key, known);
+    const other = driver === "local" && LOG_OPTS["json-file"].includes(key);
+    add(`\`logging.options.${key}\` is not an option of ${which} — the daemon refuses the container at \`up\` ("unknown log opt '${key}'"), and \`docker compose config\` said nothing (measured).`,
+      other ? `\`${key}\` exists for json-file, not for local — the local driver takes ${known.join(", ")}.`
+        : `${near ? `Did you mean \`${near}\`? ` : ""}${which[0].toUpperCase()}${which.slice(1)} takes ${known.join(", ")} — hyphens, not underscores.`);
+  }
+  const interp = (v) => v != null && v.includes("${");
+  const compress = val("compress");
+  if (compress != null && !interp(compress)) {
+    if (!/^(1|t|T|TRUE|true|True|0|f|F|FALSE|false|False)$/.test(compress)) {
+      add(`\`compress: ${compress}\` is not a boolean the daemon reads — it refuses the container at \`up\` (ParseBool: invalid syntax), measured.`,
+        "Write `compress: \"true\"` or `\"false\"`.");
+    } else if (driver === "json-file" && /^(1|t|T|TRUE|true|True)$/.test(compress)) {
+      const maxFile = val("max-file");
+      const files = maxFile == null ? 1 : Number(maxFile);
+      if (!interp(maxFile) && !interp(val("max-size")) && (val("max-size") == null || !(files >= 2))) {
+        add(`\`compress: ${compress}\` on json-file needs both \`max-size\` and \`max-file\` of at least 2 — the daemon refuses the container at \`up\` ("compress cannot be true when max-file is less than 2 or max-size is not set"), measured.`,
+          "Add `max-size: \"10m\"` and `max-file: \"3\"` — compression only applies to rotated files, so without rotation there is nothing to compress.");
+      }
+    }
+  }
+  const mode = val("mode");
+  if (mode != null && !interp(mode) && mode !== "blocking" && mode !== "non-blocking") {
+    add(`\`mode: ${mode}\` is not a logging mode — the daemon refuses the container at \`up\` ("logging mode not supported"), measured.`,
+      "The mode is `blocking` (the default) or `non-blocking`, with the hyphen.");
+  }
+  const buf = val("max-buffer-size");
+  if (buf != null && !interp(buf) && mode !== "non-blocking") {
+    add("`max-buffer-size` without `mode: non-blocking` — the daemon refuses the container at `up` (\"max-buffer-size option is only supported with 'mode=non-blocking'\"), measured.",
+      "Add `mode: non-blocking`, or drop `max-buffer-size`: the buffer only exists in non-blocking mode.");
+  }
+  const maxFile = val("max-file");
+  if (maxFile != null && !interp(maxFile) && !(/^\d+$/.test(maxFile) && Number(maxFile) >= 1)) {
+    add(`\`max-file: ${maxFile}\` is not a file count — the daemon refuses the container at \`up\`, measured (\`0\`, \`-1\` and \`three\` are each refused).`,
+      "Write a whole number of at least 1, e.g. `max-file: \"3\"`.");
+  }
+  const maxSize = val("max-size");
+  if (maxSize != null && !interp(maxSize) && !/^\d+(\.\d+)* ?[kKmMgGtTpP]?[iI]?[bB]?$/.test(maxSize)) {
+    add(`\`max-size: ${maxSize}\` is not a size — the daemon refuses the container at \`up\` ("invalid size: '${maxSize}'"), measured.`,
+      "Write a number with an optional unit: `10m`, `10mb`, `512k`, `1g`.");
+  }
+  return findings;
+}
+
 // Docker's default logging driver (json-file) keeps EVERYTHING a container
 // ever wrote to stdout/stderr, unrotated — a chatty or misbehaving service
 // fills the host disk from /var/lib/docker/containers, and the classic
@@ -1030,6 +1153,9 @@ function ruleNoPidsLimit(svc) {
 function ruleNoLogLimit(svc) {
   if (svc.logDriver != null && svc.logDriver !== "json-file") return [];
   if (svc.logMaxSize != null) return [];
+  // A misspelled max-size (`max_size`, `maxsize`) is log-opt-invalid's to
+  // name — one message, not two.
+  if (svc.logOptions && Object.keys(svc.logOptions).some((k) => k !== "max-size" && nearestLogOpt(k, LOG_OPTS["json-file"]) === "max-size")) return [];
   return [{
     level: "warn",
     rule: "no-log-limit",
@@ -1899,6 +2025,8 @@ function ruleLogRotationKeepsOneFile(svc) {
   const maxFile = opts["max-file"];
   if (maxFile != null && !(String(maxFile).trim() === "1")) return [];
   if (typeof opts["max-size"] === "string" && opts["max-size"].includes("${")) return [];
+  // A misspelled max-file (`max-files`, `max_file`) is log-opt-invalid's.
+  if (maxFile == null && Object.keys(opts).some((k) => k !== "max-file" && nearestLogOpt(k, LOG_OPTS["json-file"]) === "max-file")) return [];
   return [{
     level: "warn",
     rule: "log-rotation-keeps-one-file",
@@ -2471,6 +2599,8 @@ const RULES = [
   ruleNoPidsLimit,
   ruleNoCpuLimit,
   ruleNoLogLimit,
+  ruleLogDriverUnknown,
+  ruleLogOptInvalid,
   ruleDockerSocket,
   rulePrivileged,
   ruleExplicitRootUser,

@@ -13,6 +13,8 @@ services:
     <<: *hardened
     image: alpine:3.20
     cap_drop: [NET_RAW]              # merge-key-replaces-list (warn) — every capability except NET_RAW is back
+    logging:
+      driver: json_file              # log-driver-unknown (error) — underscore: the daemon looks for a PLUGIN called json_file, "not found" at `up` (measured)
   # Reverse proxy that mounts the Docker socket (read-write!) — full host control.
   proxy:
     image: traefik:latest            # image-latest
@@ -148,6 +150,9 @@ services:
         mode: 644                    # secret-config-mode-decimal (warn) — DECIMAL again: mounted 1204, and grafana (its owner) cannot read its own config (measured)
     pid: "service:app"               # shared-namespace (warn) — sees app's processes and reads its /proc/<pid>/environ
     ipc: "shareable"                 # shared-namespace (warn) — invites any container into its IPC namespace
+    logging:
+      driver: local
+      options: { max-size: "10m", tag: "grafana" }   # log-opt-invalid (error) — `tag` is json-file's: the local driver refuses it at `up` (measured)
     networks:
       - lockdown
 
