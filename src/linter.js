@@ -219,6 +219,53 @@ function ruleRestartNotAString(svc) {
   }];
 }
 
+// A restart STRING is passed through untouched: `docker compose config`
+// accepts anything, and the daemon judges it at `up`. MEASURED (compose
+// v5.3.1 / daemon 29.1.3): the policy is one of four lower-case words —
+// `on_failure`, `unless_stopped`, `Always`, `ON-FAILURE`, `onfailure` and
+// `never` are each "invalid restart policy: unknown policy" and the container
+// never exists. A count belongs to on-failure alone (`always:3`,
+// `unless-stopped:2`, `no:3` → "maximum retry count can only be used with
+// 'on-failure'") and cannot be negative (`on-failure:-1`). And the quiet
+// one: a count that is not a number (`on-failure:two`, `on-failure:5:1`, an
+// empty `"on-failure:"`) is DROPPED — the container gets on-failure with
+// count 0, which means no cap: measured side by side with `on-failure:2`, the
+// capped one stopped at 2 restarts while the typo kept going (8 in 20 s).
+const RESTART_POLICIES = ["no", "always", "unless-stopped", "on-failure"];
+
+function ruleRestartPolicyUnknown(svc) {
+  if (typeof svc.restart !== "string") return [];
+  const r = svc.restart.trim();
+  if (!r || r.includes("${")) return [];
+  const colon = r.indexOf(":");
+  const policy = colon === -1 ? r : r.slice(0, colon);
+  const count = colon === -1 ? null : r.slice(colon + 1);
+  const finding = (level, message, hint) => [{ level, rule: "restart-policy-unknown", message, hint }];
+  if (!RESTART_POLICIES.includes(policy)) {
+    const folded = policy.toLowerCase().replace(/_/g, "-");
+    const near = { never: "no", onfailure: "on-failure", unlessstopped: "unless-stopped" }[folded.replace(/-/g, "")]
+      ?? RESTART_POLICIES.find((p) => p === folded || editDistance(folded, p) <= 2);
+    return finding("error",
+      `\`restart: ${r}\` — \`${policy}\` is not a restart policy: the daemon refuses the container at \`up\` ("invalid restart policy: unknown policy '${policy}'"), and \`docker compose config\` said nothing (measured).`,
+      `${near ? `Write \`restart: ${near}${count != null ? `:${count}` : ""}\`. ` : ""}The policy is one of four lower-case words: \`"no"\`, \`always\`, \`unless-stopped\`, \`on-failure[:N]\` — hyphens, not underscores.`);
+  }
+  if (count == null) return [];
+  if (policy !== "on-failure") {
+    return finding("error",
+      `\`restart: ${r}\` — a retry count only exists for \`on-failure\`: the daemon refuses the container at \`up\` ("maximum retry count can only be used with 'on-failure'"), measured.`,
+      `Write \`restart: ${policy}\` (it has no cap), or \`restart: on-failure:${count}\` if a capped retry was the point.`);
+  }
+  if (/^\s*-\d+\s*$/.test(count)) {
+    return finding("error",
+      `\`restart: ${r}\` — the retry count cannot be negative: the daemon refuses the container at \`up\` ("maximum retry count cannot be negative"), measured.`,
+      "Write `on-failure` alone for no cap, or `on-failure:N` with N ≥ 1.");
+  }
+  if (/^\d+$/.test(count)) return [];
+  return finding("warn",
+    `\`restart: ${r}\` — ${count.trim() ? `\`${count}\` is not a number` : "the count after the colon is empty"}, so the count is silently DROPPED: the container gets on-failure with no cap. Measured next to \`on-failure:2\`: that one stopped after 2 restarts, this one kept restarting (8 in 20 s).`,
+    "Write the cap as digits — `restart: on-failure:5`. A crash-looping container with no cap restarts forever, hammering whatever it depends on.");
+}
+
 // A healthcheck watches a service that `restart: "no"` tells Docker never to
 // revive — and if nothing waits on `service_healthy`, nobody acts on the
 // verdict at all. Measured on the real daemon: health status NEVER triggers
@@ -2205,6 +2252,59 @@ function ruleStopSignalUncatchable(svc) {
   ];
 }
 
+// stop_signal goes to the daemon as text, and `docker compose config` never
+// looks at it. MEASURED (compose v5.3.1 / daemon 29.1.3 / runc): the daemon
+// knows 65 names — the 34 below, RTMIN, RTMIN+1..+15, RTMAX-14..-1 and RTMAX
+// — with or without SIG, in any case (all 65 started both as SIGTERM-style
+// and as lower case without the prefix). Anything else is "invalid signal"
+// at `up` and the container never exists: `SIGTREM`, `SIGKILLL`, `SIGINFO`
+// and `SIGEMT` (BSD/macOS names), `SIGUNUSED`, `SIGRTMIN+16`, `SIGRTMAX-15`
+// and `"0"`. A NUMBER is taken as is, and that is the quiet trap: `"65"`,
+// `"99"` and `"-1"` create and start fine, but runc cannot send them
+// ("unable to signal init: invalid argument") — every stop ends in SIGKILL,
+// exit 137: after 2 s for a number above 64 (the daemon logs "failed to
+// exit within 2s ... using the force", stop_grace_period ignored), after the
+// whole grace period for a negative one. A trap on the signal never ran, and
+// `docker stop` / `compose stop` returned 0. 1-64 are real signals and were
+// delivered (`"64"` = SIGRTMAX, trapped and exited 0).
+const SIGNAL_NAMES = new Set([
+  "ABRT", "ALRM", "BUS", "CHLD", "CLD", "CONT", "FPE", "HUP", "ILL", "INT", "IO", "IOT", "KILL",
+  "PIPE", "POLL", "PROF", "PWR", "QUIT", "SEGV", "STKFLT", "STOP", "SYS", "TERM", "TRAP", "TSTP",
+  "TTIN", "TTOU", "URG", "USR1", "USR2", "VTALRM", "WINCH", "XCPU", "XFSZ", "RTMIN", "RTMAX",
+  ...Array.from({ length: 15 }, (_, i) => `RTMIN+${i + 1}`),
+  ...Array.from({ length: 14 }, (_, i) => `RTMAX-${i + 1}`),
+]);
+
+function ruleStopSignalInvalid(svc) {
+  const sig = svc.stopSignal;
+  if (!sig || sig.includes("${")) return [];
+  const finding = (level, message, hint) => [{ level, rule: "stop-signal-invalid", message, hint }];
+  if (/^-?\d+$/.test(sig)) {
+    const n = Number(sig);
+    if (n >= 1 && n <= 64) return [];
+    if (n === 0) {
+      return finding("error",
+        "`stop_signal: \"0\"` — 0 is not a signal: the daemon refuses the container at `up` (\"invalid signal: 0\"), and `docker compose config` said nothing (measured).",
+        "Remove it (the default is SIGTERM) or name the signal your app handles.");
+    }
+    return finding("warn",
+      `\`stop_signal: "${sig}"\` — there is no signal ${sig}: the container starts, but runc cannot deliver it ("unable to signal init: invalid argument"), so EVERY stop ends in SIGKILL, exit 137 — ${n > 64 ? "after 2 s, whatever stop_grace_period says" : "after the whole grace period"}. The shutdown path never runs and \`docker stop\` still reports success (measured).`,
+      "Linux signals are 1-64; write the name instead (`SIGTERM`, `SIGQUIT`, `SIGUSR1`…) so a typo cannot hide as a number.");
+  }
+  const name = sig.toUpperCase().replace(/^SIG/, "");
+  if (SIGNAL_NAMES.has(name)) return [];
+  const bsd = { INFO: "Linux has no SIGINFO (it is BSD/macOS)", EMT: "Linux has no SIGEMT (it is BSD/macOS)", UNUSED: "SIGUNUSED was removed from Linux" }[name];
+  let near = null;
+  let bestD = bsd || /^RTM(IN|AX)[+-]\d+$/.test(name) ? 0 : 3;
+  for (const known of SIGNAL_NAMES) {
+    const dist = editDistance(name, known);
+    if (dist < bestD) { near = known; bestD = dist; }
+  }
+  return finding("error",
+    `\`stop_signal: ${sig}\` is not a signal the daemon knows — it refuses the container at \`up\` ("invalid signal: ${sig}"), and \`docker compose config\` said nothing (measured).`,
+    `${bsd ? `${bsd}. ` : ""}${near ? `Did you mean \`SIG${near}\`? ` : ""}Names are the Linux ones, with or without \`SIG\`, any case; real-time signals go up to \`SIGRTMIN+15\` / down to \`SIGRTMAX-14\`.`);
+}
+
 // healthcheck.test in list form must start with CMD, CMD-SHELL or NONE.
 // `test: ["curl", "-f", …]` looks perfectly plausible — and Compose refuses
 // the whole file. Joins the file-rejecting family (depends-on-unknown,
@@ -2344,6 +2444,7 @@ const RULES = [
   rulePortPublic,
   ruleNoRestart,
   ruleRestartNotAString,
+  ruleRestartPolicyUnknown,
   ruleRestartNoWithHealthcheck,
   ruleNoHealthcheck,
   ruleNoMemoryLimit,
@@ -2410,6 +2511,7 @@ const RULES = [
   ruleServiceHealthyNoHealthcheck,
   ruleCompletedDependencyRestarts,
   ruleStopSignalUncatchable,
+  ruleStopSignalInvalid,
   ruleShellPid1NoInit,
   ruleHealthcheckTestInvalid,
   ruleUndeclaredNetwork,

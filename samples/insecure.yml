@@ -68,7 +68,8 @@ services:
   worker:
     image: node:22-alpine
     command: sh -c "npm run worker"   # shell-pid1-no-init (warn) — sh never forwards SIGTERM; add init: true or exec form
-    restart: unless-stopped
+    restart: unless_stopped          # restart-policy-unknown (error) — underscore, not hyphen: `config` is silent, `up` refuses "unknown policy" (measured)
+    stop_signal: SIGTREM             # stop-signal-invalid (error) — a typo of SIGTERM: `config` is silent, `up` refuses "invalid signal" (measured)
     read_only: true
     tmpfs:
       - /tmp:size=64                 # tmpfs-size-tiny (warn) — "64 MB" without the unit: a 4 KiB tmpfs, and the first bigger write fails (measured)
