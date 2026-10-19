@@ -3702,3 +3702,51 @@ test('v0.66: insecure.yml trips both logging rules, once each, where the comment
   assert.deepEqual(Array.from(drv, (x) => x.service), ['cron']);
   assert.deepEqual(Array.from(opt, (x) => x.service), ['metrics']);
 });
+
+// --- v0.67: values `config` passes and `up` (or `stop`) pays for -----------------
+// Measured (compose v5.3.1 / daemon 29.1.3).
+
+test('cpu-cfs-out-of-range: cpu_period outside 1000-1000000 µs and cpu_quota of 1-999 µs are errors', () => {
+  for (const v of ['500', '100', '999', '1000001', '-1', '"500"']) {
+    const f = memFindings(svc(`    cpu_period: ${v}`), 'cpu-cfs-out-of-range');
+    assert.equal(f.length, 1, v);
+    assert.equal(f[0].level, 'error');
+    assert.match(f[0].message, /can not be less than 1ms \(i\.e\. 1000\) or larger than 1s/);
+  }
+  for (const v of ['1', '50', '999']) {
+    const f = memFindings(svc(`    cpu_quota: ${v}`), 'cpu-cfs-out-of-range');
+    assert.equal(f.length, 1, v);
+    assert.match(f[0].message, /quota can not be less than 1ms/);
+    assert.match(f[0].hint, /not a percentage/);
+  }
+  assert.equal(memFindings(svc('    cpu_period: 100', '    cpu_quota: 50'), 'cpu-cfs-out-of-range').length, 2);
+});
+
+test('cpu-cfs-out-of-range: the window edges, 0, negative quotas and interpolations pass (measured: all start)', () => {
+  for (const line of ['cpu_period: 1000', 'cpu_period: 1000000', 'cpu_period: 0', 'cpu_period: "100000"',
+    'cpu_quota: 1000', 'cpu_quota: 5000000', 'cpu_quota: 0', 'cpu_quota: -1', 'cpu_quota: -1000',
+    'cpu_period: ${CPU_PERIOD:-500}']) {
+    assert.equal(memFindings(svc(`    ${line}`), 'cpu-cfs-out-of-range').length, 0, line);
+  }
+});
+
+test('stop-grace-zero-or-negative: 0 is SIGKILL at once, a negative grace is never killed', () => {
+  for (const v of ['0s', '0', '0ms']) {
+    const f = memFindings(svc(`    stop_grace_period: "${v}"`), 'stop-grace-zero-or-negative');
+    assert.equal(f.length, 1, v);
+    assert.equal(f[0].level, 'warn');
+    assert.match(f[0].message, /SIGKILL right after the stop signal/);
+  }
+  for (const v of ['-5s', '-1s', '-1m30s']) {
+    const f = memFindings(svc(`    stop_grace_period: ${v}`), 'stop-grace-zero-or-negative');
+    assert.equal(f.length, 1, v);
+    assert.match(f[0].message, /WAIT FOREVER/);
+  }
+});
+
+test('stop-grace-zero-or-negative: positive graces, interpolations and unreadable values pass', () => {
+  for (const v of ['10s', '1m30s', '500ms', '${GRACE}', '-${GRACE}', 'forever']) {
+    assert.equal(memFindings(svc(`    stop_grace_period: "${v}"`), 'stop-grace-zero-or-negative').length, 0, v);
+  }
+  assert.equal(memFindings(svc('    command: ["sleep", "1"]'), 'stop-grace-zero-or-negative').length, 0);
+});

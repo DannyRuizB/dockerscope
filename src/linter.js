@@ -394,6 +394,39 @@ function ruleMemswapLimitInvalid(svc) {
   }];
 }
 
+// cpu_period and cpu_quota are the raw CFS knobs, in MICROSECONDS, and the
+// daemon only takes a period of 1 ms to 1 s and a quota of at least 1 ms (a
+// negative quota is "no limit": cpu.max reads `max`). Measured (compose
+// v5.3.1 / daemon 29.1.3): `cpu_period: 500` and `1000001` die at `up` with
+// "CPU cfs period can not be less than 1ms (i.e. 1000) or larger than 1s (i.e.
+// 1000000)", `cpu_quota: 999` with "CPU cfs quota can not be less than 1ms
+// (i.e. 1000)"; 1000 and 1000000 start, and `config` checks none of it. The
+// usual slip is reading the unit as milliseconds (`cpu_period: 100`) or the
+// quota as a percentage (`cpu_quota: 50`).
+function ruleCpuCfsOutOfRange(svc) {
+  const num = (v) => (typeof v === "number" ? v : typeof v === "string" && /^\s*-?\d+\s*$/.test(v) ? Number(v) : null);
+  const out = [];
+  const period = num(svc.cpuPeriod);
+  if (period != null && period !== 0 && (period < 1000 || period > 1000000)) {
+    out.push({
+      level: "error",
+      rule: "cpu-cfs-out-of-range",
+      message: `\`cpu_period: ${svc.cpuPeriod}\` is ${period} MICROseconds — the daemon only takes 1000 to 1000000 (1 ms to 1 s) and refuses the container at \`up\` ("CPU cfs period can not be less than 1ms (i.e. 1000) or larger than 1s (i.e. 1000000)"); \`docker compose config\` said nothing (measured).`,
+      hint: "Leave it unset (the kernel default is 100000 = 100 ms); to cap CPU, `cpus: \"0.5\"` says the same thing without the units.",
+    });
+  }
+  const quota = num(svc.cpuQuota);
+  if (quota != null && quota > 0 && quota < 1000) {
+    out.push({
+      level: "error",
+      rule: "cpu-cfs-out-of-range",
+      message: `\`cpu_quota: ${svc.cpuQuota}\` is ${quota} MICROseconds of CPU per period — under the 1 ms minimum, so the daemon refuses the container at \`up\` ("CPU cfs quota can not be less than 1ms (i.e. 1000)"); \`docker compose config\` said nothing (measured).`,
+      hint: "The quota is microseconds per `cpu_period` (100000 by default), not a percentage: half a CPU is `cpu_quota: 50000` — or write `cpus: \"0.5\"`.",
+    });
+  }
+  return out;
+}
+
 // `shm_size` sizes /dev/shm, and like every Compose size a bare number is
 // BYTES. Unlike the memory limits the daemon takes any value — measured
 // (daemon 29): `shm_size: 64` creates and RUNS, with a /dev/shm of one 4 KiB
@@ -2433,6 +2466,35 @@ function ruleStopSignalInvalid(svc) {
     `${bsd ? `${bsd}. ` : ""}${near ? `Did you mean \`SIG${near}\`? ` : ""}Names are the Linux ones, with or without \`SIG\`, any case; real-time signals go up to \`SIGRTMIN+15\` / down to \`SIGRTMAX-14\`.`);
 }
 
+// stop_grace_period is how long `docker stop` waits after stop_signal before
+// SIGKILL, and two values look harmless and are not. Measured (compose v5.3.1
+// / daemon 29.1.3, a process that traps SIGTERM): `0s` is SIGKILL at once -
+// 309 ms, exit 137, the trap never ran; a NEGATIVE duration (`-5s`, `-1s`)
+// becomes a negative StopTimeout, which Docker reads as "wait forever":
+// `docker compose stop` and `docker stop` were still waiting 40 s later with
+// the container running. `config` accepts both (a unitless "-1" it refuses).
+function ruleStopGraceZeroOrNegative(svc) {
+  const g = svc.stopGracePeriod;
+  if (!g || g.includes("${")) return [];
+  if (g.startsWith("-")) {
+    const ms = parseComposeDuration(g.slice(1));
+    if (!ms) return [];
+    return [{
+      level: "warn",
+      rule: "stop-grace-zero-or-negative",
+      message: `\`stop_grace_period: ${g}\` is negative — Docker stores it as a negative stop timeout, which means WAIT FOREVER: \`docker compose stop\` / \`down\` and \`docker stop\` hang until the process exits by itself, and one that ignores the stop signal is never killed (measured: still running 40 s later). \`docker compose config\` accepted it.`,
+      hint: "Use a positive duration sized to the shutdown (`stop_grace_period: 30s`); `docker compose down -t N` overrides it per call.",
+    }];
+  }
+  if (parseComposeDuration(g) !== 0) return [];
+  return [{
+    level: "warn",
+    rule: "stop-grace-zero-or-negative",
+    message: `\`stop_grace_period: ${g}\` — zero grace is SIGKILL right after the stop signal: the shutdown path never runs (measured: stopped in 309 ms, exit 137, a SIGTERM trap never fired).`,
+    hint: "Give the process time to drain connections and flush (the default is 10s), or drop the line.",
+  }];
+}
+
 // healthcheck.test in list form must start with CMD, CMD-SHELL or NONE.
 // `test: ["curl", "-f", …]` looks perfectly plausible — and Compose refuses
 // the whole file. Joins the file-rejecting family (depends-on-unknown,
@@ -2579,6 +2641,7 @@ const RULES = [
   ruleMemReservationExceedsLimit,
   ruleMemoryBelowDaemonMinimum,
   ruleMemswapLimitInvalid,
+  ruleCpuCfsOutOfRange,
   ruleShmSizeTiny,
   ruleTmpfsSizeTiny,
   ruleTmpfsModeDecimal,
@@ -2642,6 +2705,7 @@ const RULES = [
   ruleCompletedDependencyRestarts,
   ruleStopSignalUncatchable,
   ruleStopSignalInvalid,
+  ruleStopGraceZeroOrNegative,
   ruleShellPid1NoInit,
   ruleHealthcheckTestInvalid,
   ruleUndeclaredNetwork,
