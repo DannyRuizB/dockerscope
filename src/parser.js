@@ -161,6 +161,9 @@ window.DockerScope.parseCompose = function (yamlText, fileMap) {
         typeof raw.stop_signal === "string" || typeof raw.stop_signal === "number"
           ? String(raw.stop_signal).trim()
           : null,
+      // stop_grace_period as written ("10s", "1m30s", "-5s"); compose itself
+      // refuses a bare number, so only strings are kept.
+      stopGracePeriod: typeof raw.stop_grace_period === "string" ? raw.stop_grace_period.trim() : null,
       // `restart: false` LOOKS like a reasonable spelling of "don't restart"
       // and kills the whole file: compose rejects any non-string restart
       // (measured: "services.app.restart must be a string"). Surfaced as a
@@ -197,6 +200,10 @@ window.DockerScope.parseCompose = function (yamlText, fileMap) {
       // CPU cap: modern `deploy.resources.limits.cpus`, falling back to the
       // service-level `cpus` shorthand or the low-level `cpu_quota`.
       cpuLimit: parseCpuLimit(raw),
+      // The raw CFS knobs as written, in MICROSECONDS - judged on their own
+      // against the daemon's window (cpu-cfs-out-of-range).
+      cpuPeriod: raw.cpu_period != null ? raw.cpu_period : null,
+      cpuQuota: raw.cpu_quota != null ? raw.cpu_quota : null,
       // Log rotation: the driver name (null = compose default, json-file)
       // and the max-size option, if any — what no-log-limit judges.
       logDriver: parseLogDriver(raw),
