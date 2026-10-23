@@ -701,6 +701,7 @@ test('the insecure sample trips every security rule at once', () => {
     'tmpfs-mode-decimal', 'tmpfs-mode-no-sticky', 'secret-config-mode-decimal', 'merge-key-replaces-list',
     'volume-mode-unknown', 'unquoted-value-retyped', 'dns-not-an-ip', 'extra-hosts-invalid-ip',
     'cap-unknown', 'security-opt-unknown', 'ulimit-unknown', 'namespace-mode-invalid',
+    'command-string-not-a-shell', 'env-ref-interpolated-from-host',
   ]) {
     assert.ok(rules.has(r), `expected rule '${r}'`);
   }
@@ -2740,7 +2741,11 @@ test('shell-pid1-no-init: a string command with no init is a warning naming the 
   assert.equal(hits[0].level, 'warn');
   assert.match(hits[0].message, /`command` runs through a shell/);
   assert.match(hits[0].message, /10\.2 s/);
-  assert.equal(pid1Hits(['image: node:22-alpine', 'command: npm start']).length, 1, 'any string is shell form to compose');
+  // compose splits a string command into argv and execs it — no shell is
+  // added (measured: `command: sleep 1000` runs sleep as PID 1).
+  assert.equal(pid1Hits(['image: node:22-alpine', 'command: npm start']).length, 0, 'a plain string is argv, not a shell');
+  assert.equal(pid1Hits(['image: node:22-alpine', "command: bash -c 'npm run migrate && npm start'"]).length, 1, 'a string that spells bash -c');
+  assert.equal(pid1Hits(['image: node:22-alpine', 'entrypoint: ./run.sh --serve']).length, 0, 'a string entrypoint is argv too');
 });
 
 test('shell-pid1-no-init: the spelled-out ["sh","-c",…] list is the same shell at PID 1', () => {
@@ -2754,10 +2759,10 @@ test('shell-pid1-no-init: init: true, the exec form, an exec prefix and an inter
   assert.equal(pid1Hits(['image: node:22-alpine', 'command: sh -c "npm start"', 'init: true']).length, 0, 'init: true');
   assert.equal(pid1Hits(['image: node:22-alpine', 'command: ["npm", "start"]']).length, 0, 'exec form: the app is PID 1');
   assert.equal(pid1Hits(['image: node:22-alpine', 'command: exec npm start']).length, 0, 'exec prefix');
-  // The STRING form is wrapped in another /bin/sh -c by compose, so an inner
-  // `sh -c "exec …"` still leaves the OUTER shell at PID 1 — it fires; the
-  // spelled-out list runs that shell directly and its `exec` is honoured.
-  assert.equal(pid1Hits(['image: node:22-alpine', 'command: sh -c "exec node server.js"']).length, 1, 'string form: the outer sh stays PID 1');
+  // compose splits the string into the same argv as the list — there is no
+  // outer shell (measured: `command: sh -c "exec sleep 1000"` leaves sleep at
+  // PID 1), so the `exec` inside the script is honoured in both spellings.
+  assert.equal(pid1Hits(['image: node:22-alpine', 'command: sh -c "exec node server.js"']).length, 0, 'string form: split into the same argv, exec honoured');
   assert.equal(pid1Hits(['image: node:22-alpine', 'command: ["sh", "-c", "exec node server.js"]']).length, 0, 'list form with exec inside the -c script');
   assert.equal(pid1Hits(['image: node:22-alpine', 'command: ${START_CMD}']).length, 0, 'interpolation');
   assert.equal(pid1Hits(['image: node:22-alpine']).length, 0, 'no command at all');
@@ -2777,6 +2782,104 @@ test('shell-pid1-no-init: an init in a visible Dockerfile ENTRYPOINT exempts the
   const plain = { ...files, Dockerfile: ['FROM node:22-alpine', 'CMD ["npm", "start"]'].join('\n') };
   const model2 = DS.parseCompose(plain['docker-compose.yml'], new Map(Object.entries(plain)));
   assert.equal(DS.lint(model2).findings.filter((f) => f.rule === 'shell-pid1-no-init').length, 1);
+});
+
+// --- command-string-not-a-shell ------------------------------------------------
+// Measured (compose v5.3.1): a string command is split into argv and cut at the
+// first unquoted shell operator — `cd /tmp && sleep 100` became Cmd
+// ["cd","/tmp"] (exit 127, "cd" not found), `echo first && echo second` ran
+// `echo first` alone (exit 0); quoted / escaped operators stay literal words.
+
+function notShellHits(lines) {
+  const yaml = ['services:', '  app:', '    image: node:22-alpine', ...lines.map((l) => `    ${l}`)].join('\n');
+  return DS.lint(DS.parseCompose(yaml)).findings.filter((f) => f.rule === 'command-string-not-a-shell');
+}
+
+test('command-string-not-a-shell: the split stops at the first operator, and the rest is named as dropped', () => {
+  const hits = notShellHits(['command: npm run migrate && npm start']);
+  assert.equal(hits.length, 1);
+  assert.equal(hits[0].level, 'error');
+  assert.match(hits[0].message, /the container runs `npm run migrate` and `&& npm start` is dropped without a warning/);
+  assert.match(hits[0].hint, /command: sh -c "npm run migrate && npm start"/);
+  for (const cmd of ['echo a; echo b', 'echo a || echo b', 'echo a | tr a b', 'echo a & echo b', 'echo hi > /tmp/out', 'echo a&&echo b']) {
+    assert.equal(notShellHits([`command: ${JSON.stringify(cmd)}`]).length, 1, cmd);
+  }
+  const fd = notShellHits(['command: ./serve 2>&1']);
+  assert.match(fd[0].message, /runs `\.\/serve` and `2>&1` is dropped/, 'the fd number goes with the redirect');
+});
+
+test('command-string-not-a-shell: a shell builtin first is no program (exit 127), with or without an operator', () => {
+  const exec = notShellHits(['command: exec npm start']);
+  assert.equal(exec.length, 1);
+  assert.match(exec[0].message, /`exec` is a shell builtin, not a program/);
+  assert.match(exec[0].message, /exit 127/);
+  const cd = notShellHits(['entrypoint: cd /app && ./run.sh']);
+  assert.equal(cd.length, 1);
+  assert.match(cd[0].message, /`entrypoint` is a string with `&&`.*And `cd` is a shell builtin/);
+  assert.match(cd[0].hint, /working_dir:/);
+});
+
+test('command-string-not-a-shell: shells, lists, quoted or escaped operators and interpolations are fine', () => {
+  for (const line of [
+    'command: npm start',
+    'command: sh -c "npm run migrate && npm start"',
+    "command: bash -c 'cd /app && ./run.sh'",
+    'command: ["sh", "-c", "a && b"]',
+    'command: ["npm", "run", "a&&b"]',
+    'command: echo "a && b" \'c; d\'',
+    'command: echo a \\&\\& b',
+    'command: ./run --opt=${OPTS:-a;b}',
+  ]) {
+    assert.equal(notShellHits([line]).length, 0, line);
+  }
+});
+
+// --- env-ref-interpolated-from-host --------------------------------------------
+// Measured (compose v5.3.1), environment POSTGRES_USER: app: `$POSTGRES_USER`
+// in an sh -c command and a CMD-SHELL healthcheck got a blank string with
+// nothing exported, `hostuser` with POSTGRES_USER=hostuser exported, and `app`
+// written as `$$POSTGRES_USER`; in exec form `$$X` arrives as the text `$X`.
+
+function hostRefHits(lines) {
+  const yaml = ['services:', '  db:', '    image: postgres:17', ...lines.map((l) => `    ${l}`)].join('\n');
+  return DS.lint(DS.parseCompose(yaml)).findings.filter((f) => f.rule === 'env-ref-interpolated-from-host');
+}
+
+test('env-ref-interpolated-from-host: a CMD-SHELL healthcheck naming the service\'s own variable', () => {
+  const hits = hostRefHits(['environment:', '  POSTGRES_USER: app', '  POSTGRES_DB: shop',
+    'healthcheck:', '  test: ["CMD-SHELL", "pg_isready -U $POSTGRES_USER -d ${POSTGRES_DB}"]']);
+  assert.equal(hits.length, 1);
+  assert.equal(hits[0].level, 'warn');
+  assert.match(hits[0].message, /`healthcheck\.test` uses `\$POSTGRES_USER`, `\$POSTGRES_DB`, which this service sets in `environment:`/);
+  assert.match(hits[0].message, /measured: `hostuser` where the service said `app`/);
+  assert.match(hits[0].hint, /^Write `\$\$POSTGRES_USER`, `\$\$POSTGRES_DB`: Compose passes a literal `\$`/);
+  assert.equal(hostRefHits(['environment: [POSTGRES_USER=app]', 'healthcheck:', '  test: pg_isready -U $POSTGRES_USER']).length, 1, 'list env, string test (CMD-SHELL)');
+  assert.equal(hostRefHits(['environment: [POSTGRES_USER=app]', 'command: ["sh", "-c", "echo $POSTGRES_USER"]']).length, 1, 'sh -c command');
+});
+
+test('env-ref-interpolated-from-host: in exec form the hint says $$ alone would arrive literally', () => {
+  const exec = hostRefHits(['environment: { APP_PORT: "8080" }', 'command: ./serve --port $APP_PORT']);
+  assert.equal(exec.length, 1);
+  assert.match(exec[0].hint, /No shell runs this .* `\$\$APP_PORT` would arrive as literal text/);
+  const cmd = hostRefHits(['environment: { APP_PORT: "8080" }', 'healthcheck:', '  test: ["CMD", "curl", "-f", "http://localhost:$APP_PORT/"]']);
+  assert.match(cmd[0].hint, /No shell runs this/);
+  const cmdSh = hostRefHits(['environment: { APP_PORT: "8080" }', 'healthcheck:', '  test: ["CMD", "sh", "-c", "curl -f localhost:$APP_PORT"]']);
+  assert.match(cmdSh[0].hint, /^Write/);
+});
+
+test('env-ref-interpolated-from-host: escaped, pass-through, same-name interpolation and unrelated variables are fine', () => {
+  for (const lines of [
+    ['environment: { POSTGRES_USER: app }', 'healthcheck:', '  test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER"]'],
+    ['environment: [POSTGRES_USER]', 'healthcheck:', '  test: ["CMD-SHELL", "pg_isready -U $POSTGRES_USER"]'],
+    ['environment: { POSTGRES_USER: "${POSTGRES_USER}" }', 'healthcheck:', '  test: ["CMD-SHELL", "pg_isready -U $POSTGRES_USER"]'],
+    ['environment: { POSTGRES_USER: "${POSTGRES_USER:?set it}" }', 'healthcheck:', '  test: ["CMD-SHELL", "pg_isready -U $POSTGRES_USER"]'],
+    ['environment: { POSTGRES_USER: app }', 'healthcheck:', '  test: ["CMD-SHELL", "pg_isready -U $DB_ADMIN"]'],
+    ['healthcheck:', '  test: ["CMD-SHELL", "pg_isready -U $POSTGRES_USER"]'],
+  ]) {
+    assert.equal(hostRefHits(lines).length, 0, lines.join(' | '));
+  }
+  // A default in the service's own value still diverges when the host has none.
+  assert.equal(hostRefHits(['environment: { POSTGRES_USER: "${POSTGRES_USER:-app}" }', 'command: sh -c "echo $POSTGRES_USER"']).length, 1);
 });
 
 // --- start_interval vs start_period --------------------------------------------

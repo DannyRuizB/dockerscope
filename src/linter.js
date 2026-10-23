@@ -949,9 +949,10 @@ function ruleZeroLimitIsUnlimited(svc) {
   return out;
 }
 
-// A shell at PID 1 never forwards SIGTERM. `command: sh -c "npm start"` (the
-// string form — compose wraps it in /bin/sh -c — or the spelled-out
-// ["sh","-c",…]) makes sh PID 1 with the real process as its child; on
+// A shell at PID 1 never forwards SIGTERM. `command: sh -c "npm start"` (as a
+// string or the list ["sh","-c",…] — compose splits the string into the same
+// argv; it does NOT wrap a plain `command: npm start` in a shell, measured:
+// npm is PID 1 there) makes sh PID 1 with the real process as its child; on
 // `docker stop` the daemon signals PID 1, sh does nothing with it, and the
 // child never hears a thing until the grace period ends and SIGKILL lands.
 // MEASURED against a real daemon: `docker stop -t 10` on `sh -c 'sleep 1000'`
@@ -989,6 +990,109 @@ function ruleShellPid1NoInit(svc) {
     message: `\`${which}\` runs through a shell (\`sh -c …\`) with no \`init: true\` — the shell becomes PID 1 and never forwards SIGTERM, so \`docker stop\` waits the whole grace period and SIGKILLs the real process (measured: 10.2 s and a kill, vs 0.2 s with \`init: true\`). No graceful shutdown, no flushed buffers, no drained connections.`,
     hint: "Add `init: true` (docker-init at PID 1 forwards signals and reaps zombies), or use the exec form (`[\"npm\", \"start\"]`) / `exec` in the shell script so the app itself is PID 1 — and then make sure it handles SIGTERM, because PID 1 gets no default handlers.",
   }];
+}
+
+// A string-form `command:` / `entrypoint:` reads like a shell line and is
+// not one: compose splits it into words and STOPS at the first unquoted
+// shell operator, dropping the rest without a word (the split lives in the
+// parser, checked against the daemon's Cmd on 17 strings). Measured (compose
+// v5.3.1): `cd /tmp && sleep 100` became Cmd ["cd","/tmp"] and the container
+// never started — exec: "cd": executable file not found, exit 127; `echo
+// first && echo second` ran `echo first` alone and exited 0; `;`, `||`, `|`,
+// `&`, `>` and `2>&1` cut the same way, spaces or not; `compose config` shows
+// the cut argv to whoever looks. A shell builtin as the first word is no
+// program at all: `exec sleep 100` failed the same way, exit 127. An operator
+// inside `${…}` is the variable's business, not judged.
+const SHELL_ONLY_BUILTINS = new Set(["exec", "cd", "export", "source", ".", "set", "unset", "eval"]);
+function ruleCommandStringNotAShell(svc) {
+  const out = [];
+  for (const [field, raw, split] of [
+    ["command", svc.commandString, svc.commandSplit],
+    ["entrypoint", svc.entrypointString, svc.entrypointSplit],
+  ]) {
+    if (!split) continue;
+    const insideInterpolation = split.cutAt !== -1
+      && [...raw.matchAll(/\$\{[^}]*\}/g)].some((m) => split.cutAt > m.index && split.cutAt < m.index + m[0].length);
+    const cut = split.cutAt !== -1 && !insideInterpolation;
+    const first = split.words[0];
+    const builtin = first !== undefined && SHELL_ONLY_BUILTINS.has(first);
+    if (!cut && !builtin) continue;
+    const runs = `\`${split.words.join(" ")}\``;
+    const builtinNote = `\`${first}\` is a shell builtin, not a program — with no shell to run it the container does not even start (measured: exec: "${first}": executable file not found, exit 127)`;
+    out.push({
+      level: "error",
+      rule: "command-string-not-a-shell",
+      message: cut
+        ? `\`${field}\` is a string with \`${split.dropped.split(/\s+/)[0]}\` in it — compose does not run it through a shell: it splits the words and stops at the first shell operator, so the container runs ${runs} and \`${split.dropped}\` is dropped without a warning (measured: \`echo first && echo second\` ran only \`echo first\`, exit 0).${builtin ? ` And ${builtinNote}.` : ""}`
+        : `\`${field}\` starts with \`${first}\`: ${builtinNote}. A string \`${field}\` is split into argv and exec'd — no shell is involved.`,
+      hint: `Run it through a shell — \`${field}: sh -c "${raw.trim().replace(/"/g, '\\"')}"\` (or the list \`["sh", "-c", "…"]\`) — or move the steps into an entrypoint script.${first === "cd" ? " A leading `cd` is what `working_dir:` is for." : ""}`,
+    });
+  }
+  return out;
+}
+
+// `$VAR` in a command, entrypoint or healthcheck that names a variable the
+// service sets in its own `environment:` reads like the container's value —
+// it is not. Compose interpolates every `$VAR` / `${VAR}` in the file at `up`
+// time from the shell and .env, before the container exists. Measured
+// (compose v5.3.1) with `POSTGRES_USER: app` in environment and
+// `$POSTGRES_USER` in an `sh -c` command and a CMD-SHELL healthcheck: with
+// nothing exported both got a blank string (plus a "variable is not set"
+// warning); with POSTGRES_USER=hostuser exported both got `hostuser`,
+// silently; with `$$POSTGRES_USER` both got `app`. `$$` hands a literal `$`
+// to the container, so it only helps where a shell expands it: in exec form
+// (["CMD", …], or a plain string command, which compose splits into argv)
+// the program receives the text `$POSTGRES_USER` (measured). Not judged: an
+// environment value that is itself `${VAR}` of the same name (host and
+// container then agree by construction) and a pass-through `- VAR`.
+function interpolationRefs(text) {
+  const names = [];
+  const s = String(text);
+  for (let i = 0; i < s.length; i++) {
+    if (s[i] !== "$") continue;
+    if (s[i + 1] === "$") { i++; continue; }
+    const m = s.slice(i + 1).match(/^\{([A-Za-z_][A-Za-z0-9_]*)|^([A-Za-z_][A-Za-z0-9_]*)/);
+    if (m) names.push(m[1] || m[2]);
+  }
+  return names;
+}
+const SHELL_BINARIES_LINT = new Set(["sh", "bash", "dash", "ash", "zsh"]);
+function argvRunsShell(argv) {
+  return argv.length >= 3 && SHELL_BINARIES_LINT.has(String(argv[0]).split("/").pop()) && String(argv[1]) === "-c";
+}
+function ruleEnvRefInterpolatedFromHost(svc) {
+  const env = new Map((svc.environment || []).map((e) => [e.key, e.value]));
+  if (env.size === 0) return [];
+  const setHere = (name) => {
+    if (!env.has(name) || env.get(name) == null) return false;
+    const ip = parseInterpolation(env.get(name));
+    return !(ip && ip.name === name && (ip.op === "" || isGuardOp(ip.op)));
+  };
+  const test = svc.healthcheck ? svc.healthcheck.test : null;
+  const testHead = Array.isArray(test) ? String(test[0] ?? "").toUpperCase() : "";
+  const fields = [
+    ["command", svc.command, Boolean(svc.commandShell)],
+    ["entrypoint", svc.entrypoint, Boolean(svc.entrypointShell)],
+    ["healthcheck.test", Array.isArray(test) ? test.map(String).join(" ") : test,
+      typeof test === "string" || testHead === "CMD-SHELL" || (testHead === "CMD" && argvRunsShell(test.slice(1)))],
+  ];
+  const out = [];
+  for (const [field, text, viaShell] of fields) {
+    if (typeof text !== "string") continue;
+    const names = [...new Set(interpolationRefs(text))].filter(setHere);
+    if (names.length === 0) continue;
+    const refs = names.map((n) => `\`$${n}\``).join(", ");
+    const escaped = names.map((n) => `\`$$${n}\``).join(", ");
+    out.push({
+      level: "warn",
+      rule: "env-ref-interpolated-from-host",
+      message: `\`${field}\` uses ${refs}, which this service sets in \`environment:\` — but Compose fills ${names.length === 1 ? "it" : "them"} in at \`up\` from the shell and .env, not from the container: with nothing exported the command runs with a blank string (plus a "variable is not set" warning), and with another value exported it silently runs with that one (measured: \`hostuser\` where the service said \`app\`).`,
+      hint: viaShell
+        ? `Write ${escaped}: Compose passes a literal \`$\` and the container's shell expands it from the service's environment (measured: \`app\`).`
+        : `No shell runs this (exec form — a string \`command\` is split into argv, not run by a shell), so ${escaped} would arrive as literal text (measured). Run it through a shell (\`["CMD-SHELL", "…"]\` / \`sh -c\`) and write ${escaped}, or let the program read the variable itself.`,
+    });
+  }
+  return out;
 }
 
 // `oom_kill_disable: true` is a lie on every modern host and a host-killer
@@ -2707,6 +2811,8 @@ const RULES = [
   ruleStopSignalInvalid,
   ruleStopGraceZeroOrNegative,
   ruleShellPid1NoInit,
+  ruleCommandStringNotAShell,
+  ruleEnvRefInterpolatedFromHost,
   ruleHealthcheckTestInvalid,
   ruleUndeclaredNetwork,
   ruleUndeclaredVolume,

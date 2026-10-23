@@ -13,6 +13,7 @@ services:
     <<: *hardened
     image: alpine:3.20
     cap_drop: [NET_RAW]              # merge-key-replaces-list (warn) — every capability except NET_RAW is back
+    command: cd /jobs && ./nightly.sh   # command-string-not-a-shell (error) — no shell: compose cuts at `&&`, runs `cd /jobs` alone, and `cd` is no program (exit 127, measured)
     logging:
       driver: json_file              # log-driver-unknown (error) — underscore: the daemon looks for a PLUGIN called json_file, "not found" at `up` (measured)
   # Reverse proxy that mounts the Docker socket (read-write!) — full host control.
@@ -109,7 +110,7 @@ services:
     shm_size: 64                     # shm-size-tiny (warn) — a bare number is BYTES: /dev/shm is one 4 KiB page and Postgres' parallel workers fail later (measured)
     pids_limit: 0                    # zero-limit-is-unlimited (warn) — reads like a cap, is the absence of one (cgroup pids.max stays open)
     healthcheck:                     # defined… but see app's depends_on below
-      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      test: ["CMD-SHELL", "pg_isready -U $POSTGRES_USER"]   # env-ref-interpolated-from-host (warn) — compose fills it from the HOST at up, not from db's environment: blank or the host's value (measured); $$POSTGRES_USER
       interval: 10s                  # healthcheck-no-start-period (warn) — boot failures count against retries
       start_interval: 2s             # start-interval-without-start-period (error) — no window to apply to: `config` is silent, `up` refuses the service
       retries: 0                     # healthcheck-zero-is-default (warn) — reads like "no retries", is the daemon's word for unset: 3 applies
@@ -117,6 +118,7 @@ services:
                                      # interval is the PAUSE between probes, so a slow probe stretches the cycle to 40s and
                                      # unhealthy takes retries x that — and app's `condition: service_healthy` waits it out
     environment:
+      POSTGRES_USER: app
       POSTGRES_PASSWORD: hunter2     # env-secret (error)
       REPLICATION_PASSWORD: ${REPL_PASSWORD}   # secret-empty-when-unset (warn) — unset var interpolates to "" and `up` continues
     ports:
