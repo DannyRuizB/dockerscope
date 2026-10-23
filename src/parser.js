@@ -25,6 +25,8 @@
 //     securityOpt: [string],          // raw security_opt entries, e.g. "no-new-privileges:true"
 //     buildArgs: [{key, value}],      // build.args normalized like environment
 //     command: string|null, entrypoint: string|null,  // space-joined if exec-form list
+//     commandString: string|null, entrypointString: string|null,  // the string form as written, null for a list
+//     commandSplit / entrypointSplit: {words, cutAt, dropped}|null,  // the argv compose builds from the string form
 //   }],
 //   networks: [string],
 //   namedVolumes: [string],         // volumes used by services + declared at top level
@@ -270,6 +272,12 @@ window.DockerScope.parseCompose = function (yamlText, fileMap) {
       // handling; the joined strings above stay for the secret scans.
       commandShell: isShellForm(raw.command),
       entrypointShell: isShellForm(raw.entrypoint),
+      // The string form as written (null for a list or nothing): compose
+      // splits it into words itself, so the linter needs the raw text.
+      commandString: typeof raw.command === "string" ? raw.command : null,
+      entrypointString: typeof raw.entrypoint === "string" ? raw.entrypoint : null,
+      commandSplit: typeof raw.command === "string" ? splitShellWords(raw.command) : null,
+      entrypointSplit: typeof raw.entrypoint === "string" ? splitShellWords(raw.entrypoint) : null,
       // `init: true` puts docker-init at PID 1 (measured: /sbin/docker-init
       // -- sh -c …), which forwards signals and reaps zombies.
       init: raw.init === true,
@@ -565,18 +573,68 @@ function parseDependsOn(value) {
   return [];
 }
 
-// A shell at PID 1: the string form (compose runs it through `/bin/sh -c`),
-// or an exec-form list whose argv is a shell invoked with -c. Returns the
-// script the shell will run (trimmed) so the linter can spot an `exec`
-// prefix, or null when there is no shell form at all.
+// A shell at PID 1: an argv that is a shell invoked with -c. The string form
+// is NOT run through a shell: compose splits it into argv the way a shell
+// splits words (quotes and backslashes) and execs that directly — measured
+// (compose v5.3.1): `command: sleep 1000` is Cmd ["sleep","1000"] with sleep
+// at PID 1, and `command: sh -c "exec sleep 1000"` leaves sleep at PID 1, no
+// outer shell. So a string counts only when its own words spell `sh -c …`.
+// Returns the script the shell will run (trimmed) so the linter can spot an
+// `exec` prefix, or null when there is no shell form at all.
 const SHELL_BINARIES = new Set(["sh", "bash", "dash", "ash", "zsh"]);
 function isShellForm(value) {
-  if (typeof value === "string") return value.trim() || null;
-  if (Array.isArray(value) && value.length >= 3) {
-    const bin = String(value[0]).split("/").pop();
-    if (SHELL_BINARIES.has(bin) && String(value[1]) === "-c") return String(value[2]).trim() || null;
+  const split = typeof value === "string" ? splitShellWords(value) : null;
+  const argv = split ? split.words : value;
+  if (Array.isArray(argv) && argv.length >= 3) {
+    const bin = String(argv[0]).split("/").pop();
+    if (SHELL_BINARIES.has(bin) && String(argv[1]) === "-c") return String(argv[2]).trim() || null;
   }
   return null;
+}
+
+// The argv compose builds from a string-form command/entrypoint: words split
+// like a shell splits them (single quotes literal, double quotes keep \\ \"
+// \$ \` escapes, a backslash outside quotes escapes the next character) - and
+// the split STOPS at the first unquoted shell operator (; & | < >), dropping
+// the rest without a word. Measured (compose v5.3.1): `cd /tmp && sleep 100`
+// is Cmd ["cd","/tmp"]; `echo a 2>&1` is ["echo","a"] (the fd number goes
+// with the redirect); quoted or escaped operators stay literal words.
+// Returns {words, cutAt, dropped} (cutAt -1 and dropped "" when nothing is
+// cut), or null for an unterminated quote.
+function splitShellWords(text) {
+  const words = [];
+  let cur = "";
+  let inWord = false;
+  let quote = null;
+  const s = String(text);
+  let i = 0;
+  for (; i < s.length; i++) {
+    const c = s[i];
+    if (quote === "'") {
+      if (c === "'") quote = null; else cur += c;
+      continue;
+    }
+    if (quote === '"') {
+      if (c === '"') quote = null;
+      else if (c === "\\" && i + 1 < s.length && "\\\"$`".includes(s[i + 1])) cur += s[++i];
+      else cur += c;
+      continue;
+    }
+    if (";&|<>".includes(c)) break;
+    if (/\s/.test(c)) {
+      if (inWord) { words.push(cur); cur = ""; inWord = false; }
+      continue;
+    }
+    inWord = true;
+    if (c === "'" || c === '"') quote = c;
+    else if (c === "\\" && i + 1 < s.length) cur += s[++i];
+    else cur += c;
+  }
+  if (quote) return null;
+  const cutAt = i < s.length ? i : -1;
+  const fdOfRedirect = cutAt !== -1 && "<>".includes(s[cutAt]) && /^\d+$/.test(cur);
+  if (inWord && !fdOfRedirect) words.push(cur);
+  return { words, cutAt, dropped: cutAt === -1 ? "" : s.slice(fdOfRedirect ? cutAt - cur.length : cutAt).trim() };
 }
 
 // command / entrypoint: string form stays as-is, exec-form list joins with
