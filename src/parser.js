@@ -12,6 +12,7 @@
 //     tmpfsSizes: [{target, size, form}],  // `size` of every tmpfs mount, raw string; form "tmpfs" (option) | "volume" (long form)
 //     tmpfsModes: [{target, mode, raw, form}],  // `mode` of every tmpfs mount: effective permission bits (number) + as written
 //     retypedValues: [{field, key, raw, value}],  // unquoted environment/labels/build.args values YAML re-types; value = what Compose passes on (null when it cannot)
+//     quotedListValues: [{field, key, value, quote}],  // list-form `- KEY="v"` environment/labels/build.args items whose value is wrapped in quotes Compose keeps
 //     mergeOverrides: [{key, lost}],  // list/map keys a `<<: *anchor` brought in that the service replaced; lost = what it dropped
 //     fileModes: [{kind, source, target, mode, uid}],  // long-form secrets/configs whose `mode` is a YAML number; kind "secret" | "config"
 //     devices: [{source, target, permissions}],  // `devices:` mappings; CDI names keep source, null target
@@ -295,6 +296,7 @@ window.DockerScope.parseCompose = function (yamlText, fileMap) {
       fileModes: [...parseFileModes(raw.secrets, "secret"), ...parseFileModes(raw.configs, "config")],
       mergeOverrides: parseMergeOverrides(unmergedServices[name]),
       retypedValues: parseRetypedValues(writtenServices[name], typedServices[name]),
+      quotedListValues: parseQuotedListValues(raw),
       // `dns:` is a single string or a list of nameserver addresses; every
       // entry must be an IP (resolv.conf has no room for a hostname). The
       // daemon refuses a non-IP at `up` though `compose config` accepts it.
@@ -1194,6 +1196,40 @@ function parseRetypedValues(written, typedSvc) {
       }
       if (value === raw) continue;
       out.push({ field, key, raw, value });
+    }
+  }
+  return out;
+}
+
+// The list form passes `KEY=value` through as written - quotes included.
+// Measured (compose v5.3.1, `env` in a running container, `docker inspect`
+// labels, a build echoing its ARG): `- PASSWORD="s3cret"` reaches the
+// container as `"s3cret"` with both quote characters, `- KEY='v'` keeps the
+// single quotes, `- EMPTY=""` is two characters, not empty, and
+// `- JAVA_OPTS="-Xmx512m -Xms256m"` word-splits in a shell into `"-Xmx512m`
+// and `-Xms256m"`. The same goes for a label (a Traefik rule) and a build
+// arg. What does NOT keep them: quoting the whole item (`- "KEY=v"`: YAML
+// takes those), the mapping form (`KEY: "v"`), and an env_file line
+// (`KEY="v"` arrives as `v`: dotenv strips them - which is why a line copied
+// from .env into the list changes meaning).
+function parseQuotedListValues(svc) {
+  const out = [];
+  if (!svc || typeof svc !== "object") return out;
+  const fields = [
+    ["environment", svc.environment],
+    ["labels", svc.labels],
+    ["build.args", svc.build && typeof svc.build === "object" ? svc.build.args : null],
+  ];
+  for (const [field, list] of fields) {
+    if (!Array.isArray(list)) continue;
+    for (const item of list) {
+      if (typeof item !== "string") continue;
+      const eq = item.indexOf("=");
+      if (eq <= 0) continue;
+      const value = item.slice(eq + 1);
+      const q = value[0];
+      if (value.length < 2 || (q !== '"' && q !== "'") || value[value.length - 1] !== q) continue;
+      out.push({ field, key: item.slice(0, eq), value, quote: q });
     }
   }
   return out;
