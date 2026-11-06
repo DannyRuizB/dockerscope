@@ -583,6 +583,30 @@ function ruleUnquotedValueRetyped(svc) {
   return out;
 }
 
+// The list form passes `- KEY=value` through as written, so quotes around
+// the value stay part of it (measured with compose v5.3.1, see the parser's
+// parseQuotedListValues): `- PASSWORD="s3cret"` reaches the container as
+// `"s3cret"`, a quoted Traefik rule label keeps its quotes, a build arg too,
+// and `- JAVA_OPTS="-Xmx512m -Xms256m"` splits into `"-Xmx512m` and
+// `-Xms256m"`. The usual origin is a line copied from an env_file, where
+// dotenv DOES strip them. Only quotes wrapping the whole value are judged; a
+// quote inside a value is data.
+const QUOTES_WHERE = { environment: "the container gets", "build.args": "the build gets", labels: "the label reads" };
+function ruleListValueQuotesKept(svc) {
+  const out = [];
+  for (const q of svc.quotedListValues || []) {
+    const inner = q.value.slice(1, -1);
+    const empty = inner === "";
+    out.push({
+      level: "warn",
+      rule: "list-value-quotes-kept",
+      message: `\`${q.field}\` \`- ${q.key}=${q.value}\` keeps its quotes — ${QUOTES_WHERE[q.field]} \`${q.key}=${q.value}\`, ${empty ? "two quote characters instead of an empty value" : `with both \`${q.quote}\` characters as part of the value`} (measured: the list form passes \`KEY=value\` through as written${q.field === "environment" ? `; an env_file line \`${q.key}=${q.value}\` would arrive ${empty ? "empty" : `as \`${inner}\``}, because dotenv strips them and Compose here does not` : ""}).${/\s/.test(inner) ? ` Split by a shell, it becomes \`${q.quote}${inner.split(/\s+/)[0]}\` … \`${inner.split(/\s+/).slice(-1)[0]}${q.quote}\`, quotes stuck to the ends (measured with a JAVA_OPTS-style value).` : ""}`,
+      hint: `Drop the quotes (\`- ${q.key}=${inner}\`), quote the whole item (\`- "${q.key}=${inner}"\`) or use the mapping form (\`${q.key}: "${inner}"\`) — all three pass ${empty ? "an empty value" : `\`${inner}\``}. If the quotes really belong to the value, say so with the mapping form: \`${q.key}: ${q.quote === '"' ? `'${q.value}'` : `"${q.value}"`}\`.`,
+    });
+  }
+  return out;
+}
+
 // Lenient "is this an IP?" - catches a hostname or a typo (the actual footgun)
 // without ever rejecting a real address. IPv4 is exact (octets 0-255); IPv6 is
 // loose on purpose: a value with a ':' made only of hex, ':' and '.' (for an
@@ -2754,6 +2778,7 @@ const RULES = [
   ruleMergeKeyReplacesList,
   ruleVolumeModeUnknown,
   ruleUnquotedValueRetyped,
+  ruleListValueQuotesKept,
   ruleDnsNotAnIp,
   ruleExtraHostsInvalidIp,
   ruleCapUnknown,

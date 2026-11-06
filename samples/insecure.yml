@@ -165,6 +165,7 @@ services:
     environment:
       - LOG_LEVEL=debug
       - LOG_LEVEL=info                                    # duplicate-env-key (warn) — the second silently wins
+      - DATABASE_URL="postgres://app@db:5432/app"         # list-value-quotes-kept (warn) — copied from .env: the list form KEEPS the quotes, the app gets "postgres://…" with them (measured)
     depends_on:
       - db                           # depends-on-ignores-healthcheck (warn) — db has a healthcheck, short form doesn't wait for it
       - cache                        # depends-on-unknown (error) — no such service here

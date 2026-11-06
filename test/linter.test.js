@@ -701,7 +701,7 @@ test('the insecure sample trips every security rule at once', () => {
     'tmpfs-mode-decimal', 'tmpfs-mode-no-sticky', 'secret-config-mode-decimal', 'merge-key-replaces-list',
     'volume-mode-unknown', 'unquoted-value-retyped', 'dns-not-an-ip', 'extra-hosts-invalid-ip',
     'cap-unknown', 'security-opt-unknown', 'ulimit-unknown', 'namespace-mode-invalid',
-    'command-string-not-a-shell', 'env-ref-interpolated-from-host',
+    'command-string-not-a-shell', 'env-ref-interpolated-from-host', 'list-value-quotes-kept',
   ]) {
     assert.ok(rules.has(r), `expected rule '${r}'`);
   }
@@ -3358,6 +3358,52 @@ test('volume-mode-unknown: every option Compose knows is fine', () => {
   assert.equal(memFindings(svc('    volumes:', '      - ./data:/data', '      - /cache', '      - type: bind', '        source: ./x', '        target: /x', '        read_only: true'), 'volume-mode-unknown').length, 0);
   // Anchor: the same harness DOES flag the bad spelling.
   assert.equal(memFindings(svc('    volumes:', '      - ./data:/data:readonly'), 'volume-mode-unknown').length, 1);
+});
+
+// --- list-value-quotes-kept --------------------------------------------------
+// Measured (compose v5.3.1, `env` in a running container, docker inspect labels,
+// a build echoing its ARG): the list form keeps quotes that wrap the value;
+// quoting the whole item, the mapping form and an env_file line do not.
+
+test('list-value-quotes-kept: a quoted value in list-form environment keeps its quotes', () => {
+  const env = (...l) => svc('    environment:', ...l);
+  for (const line of ['- PASSWORD="s3cret"', "- PASSWORD='s3cret'", '- \'PASSWORD="s3cret"\'', '- URL="postgres://app@db:5432/app"', '- EMPTY=""', '- URL="${DATABASE_URL}"']) {
+    const f = memFindings(env(`      ${line}`), 'list-value-quotes-kept');
+    assert.equal(f.length, 1, line);
+    assert.equal(f[0].level, 'warn');
+    assert.match(f[0].message, /keeps its quotes — the container gets/);
+  }
+  const f = memFindings(env('      - PASSWORD="s3cret"'), 'list-value-quotes-kept')[0];
+  assert.match(f.message, /the container gets `PASSWORD="s3cret"`, with both `"` characters as part of the value/);
+  assert.match(f.message, /an env_file line `PASSWORD="s3cret"` would arrive as `s3cret`, because dotenv strips them/);
+  assert.match(f.hint, /`- PASSWORD=s3cret`.*`- "PASSWORD=s3cret"`.*`PASSWORD: "s3cret"`/);
+  assert.match(f.hint, /`PASSWORD: '"s3cret"'`/);
+  assert.match(memFindings(env("      - P='s3cret'"), 'list-value-quotes-kept')[0].hint, /`P: "'s3cret'"`/);
+  const empty = memFindings(env('      - EMPTY=""'), 'list-value-quotes-kept')[0];
+  assert.match(empty.message, /two quote characters instead of an empty value/);
+  assert.match(empty.message, /would arrive empty/);
+  const jvm = memFindings(env('      - JAVA_OPTS="-Xmx512m -Xms256m"'), 'list-value-quotes-kept')[0];
+  assert.match(jvm.message, /it becomes `"-Xmx512m` … `-Xms256m"`, quotes stuck to the ends/);
+});
+
+test('list-value-quotes-kept: what Compose passes clean is never flagged', () => {
+  const env = (...l) => svc('    environment:', ...l);
+  for (const lines of [['      - "PASSWORD=s3cret"'], ['      - PASSWORD=s3cret'], ['      - PASSWORD=pa"ss'], ['      - MSG="half'],
+    ['      - PASSWORD=s3cret # a comment'], ['      - PASSWORD'], ['      PASSWORD: "s3cret"'], ['      PASSWORD: \'"s3cret"\''],
+    ['      - JSON={"a":"b"}'], ['      - Q="']]) {
+    assert.equal(memFindings(env(...lines), 'list-value-quotes-kept').length, 0, lines.join(' '));
+  }
+});
+
+test('list-value-quotes-kept: labels and build.args in list form too, with their own wording', () => {
+  const l = memFindings(svc('    labels:', '      - traefik.http.routers.web.rule="Host(`example.com`)"', '      - "plain=ok"'), 'list-value-quotes-kept');
+  assert.equal(l.length, 1);
+  assert.match(l[0].message, /`labels` .*the label reads `traefik.http.routers.web.rule="Host/);
+  assert.doesNotMatch(l[0].message, /env_file/);
+  const b = memFindings(svc('    build:', '      context: .', '      args:', '        - V="1.2.3"', '        - "W=1.2.3"'), 'list-value-quotes-kept');
+  assert.equal(b.length, 1);
+  assert.match(b[0].message, /`build.args` `- V="1.2.3"` keeps its quotes — the build gets `V="1.2.3"`/);
+  assert.equal(memFindings(svc('    labels:', '      a: "b"'), 'list-value-quotes-kept').length, 0, 'mapping form');
 });
 
 // --- unquoted-value-retyped --------------------------------------------------
