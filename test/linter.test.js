@@ -3899,3 +3899,75 @@ test('stop-grace-zero-or-negative: positive graces, interpolations and unreadabl
   }
   assert.equal(memFindings(svc('    command: ["sleep", "1"]'), 'stop-grace-zero-or-negative').length, 0);
 });
+
+// --- the Dockerfile's HEALTHCHECK counts (no-healthcheck, service-healthy-no-
+// healthcheck, depends-on-ignores-healthcheck) ---------------------------------
+// Measured (compose v5.3.1, docker inspect): a HEALTHCHECK in the Dockerfile
+// makes the container `healthy`, and a dependent waiting on service_healthy
+// starts once it is; with `HEALTHCHECK NONE` (or no check at all) `up` stops:
+// "dependency failed to start: ... has no healthcheck configured", rc 1.
+// compose `healthcheck: disable: true` overrides the Dockerfile's (Test NONE).
+
+const hcCompose = (dfName, extra = '') => [
+  'services:',
+  '  api:',
+  `    build: { context: ., dockerfile: ${dfName} }`,
+  extra,
+  '  worker:',
+  '    image: busybox:1.36',
+  '    depends_on:',
+  '      api: { condition: service_healthy }',
+].filter(Boolean).join('\n');
+const HC_DF = new Map([
+  ['hc.Dockerfile', 'FROM busybox:1.36\nHEALTHCHECK --interval=10s CMD wget -qO- http://localhost:3000/health || exit 1\nCMD ["sleep","300"]\n'],
+  ['none.Dockerfile', 'FROM busybox:1.36\nHEALTHCHECK NONE\nCMD ["sleep","300"]\n'],
+  ['plain.Dockerfile', 'FROM busybox:1.36\nCMD ["sleep","300"]\n'],
+  ['staged.Dockerfile', 'FROM busybox:1.36 AS base\nHEALTHCHECK CMD true\nFROM base AS app\nCMD ["sleep","300"]\n'],
+]);
+const hcLint = (text) => DS.lint(DS.parseCompose(text, HC_DF)).findings;
+const hcFor = (findings, rule, service) => findings.filter((f) => f.rule === rule && (!service || f.service === service));
+
+test('a HEALTHCHECK in the Dockerfile satisfies no-healthcheck and service_healthy', () => {
+  for (const df of ['hc.Dockerfile', 'staged.Dockerfile']) {
+    const f = hcLint(hcCompose(df));
+    assert.equal(hcFor(f, 'no-healthcheck', 'api').length, 0, df);
+    assert.equal(hcFor(f, 'service-healthy-no-healthcheck').length, 0, df);
+  }
+});
+
+test('HEALTHCHECK NONE in the Dockerfile, or no check at all, still fails service_healthy', () => {
+  const none = hcLint(hcCompose('none.Dockerfile'));
+  const err = hcFor(none, 'service-healthy-no-healthcheck');
+  assert.equal(err.length, 1);
+  assert.equal(err[0].level, 'error');
+  assert.match(err[0].message, /switches its image's off with `HEALTHCHECK NONE` in its Dockerfile/);
+  assert.match(hcFor(none, 'no-healthcheck', 'api')[0].message, /HEALTHCHECK NONE/);
+  const plain = hcLint(hcCompose('plain.Dockerfile'));
+  assert.match(hcFor(plain, 'service-healthy-no-healthcheck')[0].message, /has no healthcheck/);
+  assert.equal(hcFor(plain, 'no-healthcheck', 'api')[0].message, 'no `healthcheck` configured.');
+});
+
+test('compose `healthcheck: disable: true` beats the Dockerfile', () => {
+  const f = hcLint(hcCompose('hc.Dockerfile', '    healthcheck: { disable: true }'));
+  assert.match(hcFor(f, 'service-healthy-no-healthcheck')[0].message, /disables its healthcheck/);
+});
+
+test('depends-on-ignores-healthcheck sees the Dockerfile check, and not a disabled one', () => {
+  const short = (dfName, extra = '') => [
+    'services:', '  api:', `    build: { context: ., dockerfile: ${dfName} }`, extra,
+    '  worker:', '    image: busybox:1.36', '    depends_on: [api]',
+  ].filter(Boolean).join('\n');
+  const f = hcFor(hcLint(short('hc.Dockerfile')), 'depends-on-ignores-healthcheck');
+  assert.equal(f.length, 1);
+  assert.match(f[0].message, /defines a healthcheck \(in its Dockerfile\)/);
+  // A disabled check is nothing to wait for, and service_healthy on it is
+  // refused: the old rule suggested exactly that.
+  assert.equal(hcFor(hcLint(short('hc.Dockerfile', '    healthcheck: { disable: true }')), 'depends-on-ignores-healthcheck').length, 0);
+  assert.equal(hcFor(hcLint(short('none.Dockerfile')), 'depends-on-ignores-healthcheck').length, 0);
+});
+
+test('without its Dockerfile uploaded a build service is judged on the compose alone, as before', () => {
+  const f = DS.lint(DS.parseCompose(hcCompose('hc.Dockerfile'))).findings;
+  assert.equal(hcFor(f, 'no-healthcheck', 'api').length, 1);
+  assert.equal(hcFor(f, 'service-healthy-no-healthcheck').length, 1);
+});

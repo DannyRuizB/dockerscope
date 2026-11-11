@@ -17,7 +17,12 @@ services:
       context: ./worker
       dockerfile: worker.Dockerfile
     depends_on:
-      - db
+      db:
+        condition: service_started
+      # api has no `healthcheck:` here - its check is the HEALTHCHECK in
+      # api.Dockerfile, and that is the one this condition waits on.
+      api:
+        condition: service_healthy
 
   db:
     image: postgres:16

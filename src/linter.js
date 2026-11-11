@@ -1327,12 +1327,30 @@ function ruleNoLogLimit(svc) {
   }];
 }
 
+// The health a container really reports. Compose's `healthcheck:` wins
+// (`disable: true` and test NONE included); without one, the HEALTHCHECK in
+// the service's uploaded Dockerfile runs - measured (compose v5.3.1): the
+// container goes `healthy` and a `depends_on: condition: service_healthy`
+// waits for it and starts. `HEALTHCHECK NONE` there means none. A service
+// whose Dockerfile was not uploaded (or that runs a bare `image:`) is
+// unknown, and judged on its compose file alone, as before.
+function effectiveHealthcheck(svc) {
+  if (svc.healthcheck) return { source: "compose", disabled: healthcheckDisabled(svc.healthcheck) };
+  const hc = svc.dockerfile && svc.dockerfile.healthcheck;
+  if (hc) return { source: "dockerfile", disabled: hc.none };
+  return null;
+}
+
 function ruleNoHealthcheck(svc) {
   if (svc.healthcheck) return [];
+  const eff = effectiveHealthcheck(svc);
+  if (eff && !eff.disabled) return []; // the image's own HEALTHCHECK runs
   return [{
     level: "warn",
     rule: "no-healthcheck",
-    message: "no `healthcheck` configured.",
+    message: eff
+      ? "no `healthcheck` configured — and its Dockerfile switches the image's off with `HEALTHCHECK NONE`."
+      : "no `healthcheck` configured.",
     hint: "Add a `healthcheck` so Docker can detect unresponsive services and `depends_on: condition: service_healthy` works.",
   }];
 }
@@ -2430,13 +2448,17 @@ function ruleDependsOnIgnoresHealthcheck(svc, model) {
   const findings = [];
   for (const dep of svc.depends_on) {
     const target = byName.get(dep);
-    if (!target || !target.healthcheck) continue;
+    if (!target) continue;
+    // A disabled check is nothing to wait for - and service_healthy on it is
+    // refused outright (service-healthy-no-healthcheck), so never suggest it.
+    const eff = effectiveHealthcheck(target);
+    if (!eff || eff.disabled) continue;
     const cond = (svc.dependsOnConditions || {})[dep] || null;
     if (cond === "service_healthy" || cond === "service_completed_successfully") continue;
     findings.push({
       level: "warn",
       rule: "depends-on-ignores-healthcheck",
-      message: `\`depends_on: ${dep}\` only waits for the container to start, but \`${dep}\` defines a healthcheck.`,
+      message: `\`depends_on: ${dep}\` only waits for the container to start, but \`${dep}\` defines a healthcheck${eff.source === "dockerfile" ? " (in its Dockerfile)" : ""}.`,
       hint: `Use the long form — \`depends_on: { ${dep}: { condition: service_healthy } }\` — to wait until the healthcheck passes.`,
     });
   }
@@ -2466,8 +2488,16 @@ function ruleServiceHealthyNoHealthcheck(svc, model) {
     if (cond !== "service_healthy") continue;
     const target = byName.get(dep);
     if (!target) continue;
-    if (target.healthcheck && !healthcheckDisabled(target.healthcheck)) continue;
-    const why = target.healthcheck ? "disables its healthcheck" : "has no healthcheck";
+    // The Dockerfile's HEALTHCHECK counts: measured (compose v5.3.1), a
+    // dependent waiting on a service whose check lives only in its Dockerfile
+    // starts once that one is healthy; with `HEALTHCHECK NONE`, or none at
+    // all, `up` stops: "dependency failed to start: ... has no healthcheck
+    // configured", rc 1.
+    const eff = effectiveHealthcheck(target);
+    if (eff && !eff.disabled) continue;
+    const why = !eff ? "has no healthcheck"
+      : eff.source === "compose" ? "disables its healthcheck"
+      : "switches its image's off with `HEALTHCHECK NONE` in its Dockerfile";
     findings.push({
       level: "error",
       rule: "service-healthy-no-healthcheck",

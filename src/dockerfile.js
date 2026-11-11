@@ -57,15 +57,43 @@ window.DockerScope.parseDockerfile = function (text) {
       case "USER":
         current.user = args;
         break;
+      case "HEALTHCHECK":
+        // The last one in a stage wins; `HEALTHCHECK NONE` switches off any
+        // check the base image had (measured: Test ["NONE"], no health).
+        current.healthcheck = { none: /^none$/i.test(args), raw: args };
+        break;
     }
   }
 
+  const finalStage = stages.length ? stages[stages.length - 1] : null;
   return {
     stages,
-    finalStage: stages.length ? stages[stages.length - 1] : null,
+    finalStage,
     multiStage: stages.length > 1,
+    healthcheck: stageHealthcheck(stages, stages.length - 1),
   };
 };
+
+// The HEALTHCHECK the built image carries: the stage's own, else the one of
+// the earlier stage it is built FROM (`FROM base AS app` inherits base's
+// check - measured: healthy; `FROM busybox AS app` after a stage that had
+// one does not - measured: none). A FROM an outside image is unknown here,
+// so null: "this Dockerfile sets none", not "the image has none".
+function stageHealthcheck(stages, idx) {
+  const seen = new Set();
+  while (idx >= 0 && !seen.has(idx)) {
+    seen.add(idx);
+    const stage = stages[idx];
+    if (stage.healthcheck) return stage.healthcheck;
+    const from = String(stage.from || "").toLowerCase();
+    let parent = -1;
+    for (let i = idx - 1; i >= 0; i--) {
+      if (stages[i].name && stages[i].name.toLowerCase() === from) { parent = i; break; }
+    }
+    idx = parent;
+  }
+  return null;
+}
 
 function collapseContinuations(text) {
   const out = [];
@@ -100,6 +128,7 @@ function makeStageFromArgs(args) {
     entrypoint: null,
     workdir: null,
     user: null,
+    healthcheck: null,
   };
 }
 
